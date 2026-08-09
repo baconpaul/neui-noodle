@@ -1,9 +1,11 @@
-// neui-noodle - a two-component sandbox on top of the neui framework.
+// neui-noodle - a three-component sandbox on top of the neui framework.
 //
-//   HoverBox : a painted region that goes red while the pointer is inside it
-//   SineWave : a plotted sine whose phase follows a horizontal drag
+//   HoverBox    : a painted region that goes red while the pointer is inside it
+//   SplitHandle : a three-dot grip that goes yellow on hover and drags the
+//                 boundary between the two panes
+//   SineWave    : a plotted sine whose phase follows a horizontal drag
 //
-// Both are NEUI_W_CUSTOMDRAW widgets. neui hands a painter vtable plus an
+// All three are NEUI_W_CUSTOMDRAW widgets. neui hands a painter vtable plus an
 // opaque painter handle to the client inside NEUI_EVENT_WIDGET_PAINT, and the
 // client draws whatever it likes in widget-local logical pixels.
 //
@@ -17,6 +19,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <numbers>
 
 namespace
@@ -34,12 +37,15 @@ constexpr const char* k_xpl_host = "neui.host.crossplatform";
 constexpr float k_two_pi = 2.0f * std::numbers::pi_v<float>;
 
 // Colours are 0xAARRGGBB everywhere in the painter API.
-constexpr uint32_t k_ink_dim    = 0xFF8A94A6;
-constexpr uint32_t k_panel      = 0xFF262B33;
-constexpr uint32_t k_panel_edge = 0xFF3C4350;
-constexpr uint32_t k_hot        = 0xFFD1495B;
-constexpr uint32_t k_hot_edge   = 0xFFF2A0AC;
-constexpr uint32_t k_trace      = 0xFF6FD1B0;
+constexpr uint32_t k_ink_dim     = 0xFF8A94A6;
+constexpr uint32_t k_panel       = 0xFF262B33;
+constexpr uint32_t k_panel_edge  = 0xFF3C4350;
+constexpr uint32_t k_backdrop    = 0xFF1B1F26;
+constexpr uint32_t k_hot         = 0xFFD1495B;
+constexpr uint32_t k_hot_edge    = 0xFFF2A0AC;
+constexpr uint32_t k_yellow      = 0xFFF5C542;
+constexpr uint32_t k_yellow_wash = 0xFF33301E;
+constexpr uint32_t k_trace       = 0xFF6FD1B0;
 
 // ---------------------------------------------------------------------------
 // A C++ view over the (painter_api, painter) pair. Every painter call needs
@@ -83,6 +89,15 @@ public:
   void line_to(float x, float y)      const { api_->line_to(p_, x, y); }
   void stroke_path(float w, uint32_t argb) const { api_->stroke_path(p_, w, argb); }
 
+  // The painter has no circle primitive - a filled dot is a full arc sweep
+  // committed with fill_path.
+  void fill_circle(float cx, float cy, float r, uint32_t argb) const
+  {
+    api_->begin_path(p_);
+    api_->arc(p_, cx, cy, r, 0.0f, k_two_pi);
+    api_->fill_path(p_, argb);
+  }
+
 private:
   neui_painter_api_t* api_;
   neui_painter_t*     p_;
@@ -92,7 +107,7 @@ private:
 
 // ---------------------------------------------------------------------------
 // Session-level handles the components need in order to talk back to neui
-// (invalidate, mainly). Copied by value; both fields are borrowed.
+// (invalidate and set_pos, mainly). Copied by value; both fields are borrowed.
 // ---------------------------------------------------------------------------
 struct Ui
 {
@@ -103,6 +118,10 @@ struct Ui
                        int x, int y, int w, int h) const
   {
     return widgets->create(session, parent, type, x, y, w, h, nullptr);
+  }
+  void set_pos(neui_widget_t w, int x, int y, int width, int height) const
+  {
+    widgets->set_pos(session, w, x, y, width, height);
   }
   void invalidate(neui_widget_t w) const { widgets->invalidate(session, w); }
   void set_text(neui_widget_t w, const char* t) const { widgets->set_text(session, w, t); }
@@ -120,7 +139,8 @@ public:
   virtual ~Component() = default;
 
   void attach(const Ui& ui, neui_widget_t w) { ui_ = ui; id_ = w; }
-  uint32_t id() const { return id_.id; }
+  neui_widget_t widget() const { return id_; }
+  uint32_t      id()     const { return id_.id; }
 
   virtual void paint(const Canvas&) {}
   // Return true when the event is handled, which stops neui forwarding it to
@@ -142,8 +162,7 @@ class HoverBox final : public Component
 public:
   void paint(const Canvas& c) override
   {
-    const uint32_t body = hovered_ ? k_hot : k_panel;
-    c.fill(0, 0, c.width(), c.height(), body);
+    c.fill(0, 0, c.width(), c.height(), hovered_ ? k_hot : k_panel);
     c.stroke(0.5f, 0.5f, c.width() - 1.0f, c.height() - 1.0f, 1.0f,
              hovered_ ? k_hot_edge : k_panel_edge);
 
@@ -176,6 +195,81 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// SplitHandle - three dots, yellow while hovered or dragging. Reports drag
+// movement as a signed pixel delta; the owner decides what that means.
+// ---------------------------------------------------------------------------
+class SplitHandle final : public Component
+{
+public:
+  std::function<void(int)> on_drag;
+
+  void paint(const Canvas& c) override
+  {
+    const bool lit = hovered_ || dragging_;
+
+    c.fill(0, 0, c.width(), c.height(), lit ? k_yellow_wash : k_backdrop);
+    // Hairlines top and bottom so the handle reads as a seam, not a third pane.
+    c.fill(0, 0, c.width(), 1.0f, k_panel_edge);
+    c.fill(0, c.height() - 1.0f, c.width(), 1.0f, k_panel_edge);
+
+    const float cx  = c.width() * 0.5f;
+    const float cy  = c.height() * 0.5f;
+    const float r   = dragging_ ? 4.0f : 3.0f;
+    const uint32_t dot = lit ? k_yellow : k_ink_dim;
+    for (int i = -1; i <= 1; ++i)
+      c.fill_circle(cx + static_cast<float>(i) * k_dot_spacing, cy, r, dot);
+  }
+
+  bool mouse(neui_event_type_t type, const neui_event_mouse_t& m) override
+  {
+    switch (type)
+    {
+    case NEUI_EVENT_MOUSE_ENTER:
+      hovered_ = true;
+      repaint();
+      return true;
+
+    case NEUI_EVENT_MOUSE_LEAVE:
+      // Not while dragging: the handle slides out from under the pointer at
+      // the clamp limits, and going grey mid-drag looks broken.
+      hovered_ = false;
+      if (!dragging_) repaint();
+      return true;
+
+    case NEUI_EVENT_MOUSE_BUTTON_DOWN:
+      dragging_ = true;
+      grab_y_   = m.y;
+      repaint();
+      return true;
+
+    case NEUI_EVENT_MOUSE_MOVE:
+      if (!dragging_ || !(m.buttonmap & NEUI_MK_LBUTTON)) return false;
+      // m.y is local to where the handle is *now*, so this delta is really an
+      // absolute "where should the seam be" measurement: it stays correct even
+      // when the split clamps and the handle stops tracking the pointer.
+      if (on_drag) on_drag(m.y - grab_y_);
+      return true;
+
+    case NEUI_EVENT_MOUSE_BUTTON_UP:
+      if (!dragging_) return false;
+      dragging_ = false;
+      repaint();
+      return true;
+
+    default:
+      return false;
+    }
+  }
+
+private:
+  static constexpr float k_dot_spacing = 30.0f;
+
+  bool hovered_{false};
+  bool dragging_{false};
+  int  grab_y_{0};
+};
+
+// ---------------------------------------------------------------------------
 // SineWave - plots a sine across its width; a horizontal drag shifts phase.
 // ---------------------------------------------------------------------------
 class SineWave final : public Component
@@ -184,8 +278,8 @@ public:
   void paint(const Canvas& c) override
   {
     const float w = c.width(), h = c.height();
-    c.fill(0, 0, w, h, 0xFF1B1F26);
-    c.stroke(0.5f, 0.5f, w - 1.0f, h - 1.0f, 1.0f, 0xFF3C4350);
+    c.fill(0, 0, w, h, k_backdrop);
+    c.stroke(0.5f, 0.5f, w - 1.0f, h - 1.0f, 1.0f, k_panel_edge);
 
     const float mid = h * 0.5f;
     const float amp = std::max(4.0f, h * 0.34f);
@@ -261,21 +355,61 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// App - owns the session and routes the single flat callback to components.
+// App - owns the session, holds the layout, and routes the single flat
+// callback to components. neui ships no layout engine, so the arithmetic
+// below is the whole "layout system" and relayout() is the only place that
+// moves a widget.
 // ---------------------------------------------------------------------------
 struct App
 {
   Ui            ui;
   neui_widget_t window{widget_none};
   HoverBox      box;
+  SplitHandle   handle;
   SineWave      wave;
 
   Component* component_for(uint32_t widget_id)
   {
-    if (widget_id == box.id())  return &box;
-    if (widget_id == wave.id()) return &wave;
+    if (widget_id == box.id())    return &box;
+    if (widget_id == handle.id()) return &handle;
+    if (widget_id == wave.id())   return &wave;
     return nullptr;
   }
+
+  // Re-read the frame's usable rect and inset it. Called at startup and on
+  // every frame resize.
+  void read_content_rect()
+  {
+    int x = 0, y = 0, w = 0, h = 0;
+    ui.widgets->get_client_rect(ui.session, window, &x, &y, &w, &h);
+    cx = x + k_margin;
+    cy = y + k_margin;
+    cw = std::max(1, w - 2 * k_margin);
+    ch = std::max(1, h - 2 * k_margin);
+  }
+
+  // split is the top pane's height; the handle sits directly below it and the
+  // bottom pane takes the rest.
+  void relayout()
+  {
+    const int panes = std::max(2 * k_min_pane, ch - k_handle_h);
+    split = std::clamp(split, k_min_pane, panes - k_min_pane);
+
+    ui.set_pos(box.widget(),    cx, cy,                          cw, split);
+    ui.set_pos(handle.widget(), cx, cy + split,                  cw, k_handle_h);
+    ui.set_pos(wave.widget(),   cx, cy + split + k_handle_h,     cw, panes - split);
+
+    ui.invalidate(box.widget());
+    ui.invalidate(handle.widget());
+    ui.invalidate(wave.widget());
+  }
+
+  static constexpr int k_margin   = 16;
+  static constexpr int k_handle_h = 22;
+  static constexpr int k_min_pane = 48;
+
+  int cx{0}, cy{0}, cw{0}, ch{0};
+  int split{0};
 };
 
 // Every payload in the event union carries a .widget, but the union member
@@ -315,6 +449,17 @@ bool NEUI_ABI on_event(void* token, neui_event_t* event)
       return true;
     }
     return false;
+  }
+
+  // resize.widget is the FRAME - check it, or a second window would relayout
+  // this one. (Not emitted by the crossplatform host on macOS today, so under
+  // --xpl the panes keep their size when the window grows.)
+  if (event->type == NEUI_EVENT_RESIZE)
+  {
+    if (event->data.resize.widget.id != app->window.id) return false;
+    app->read_content_rect();
+    app->relayout();
+    return true;
   }
 
   if (is_mouse_event(event->type))
@@ -376,25 +521,21 @@ int main(int argc, char* argv[])
   // For a top-level frame, width/height is the CLIENT area at 96 DPI - the
   // host grows the outer window for title bar and borders itself.
   app.window = app.ui.create(widget_none, NEUI_W_APPWINDOW, 140, 140, 600, 400);
-  app.ui.set_text(app.window, "neui noodle - hover + drag");
+  app.ui.set_text(app.window, "neui noodle - hover, drag, split");
 
-  // ...but read the usable rect back rather than trusting the create size: a
-  // host that draws an in-frame menubar reports a shorter client here.
-  int cx = 0, cy = 0, cw = 600, ch = 400;
-  app.ui.widgets->get_client_rect(app.ui.session, app.window, &cx, &cy, &cw, &ch);
+  // Create at any size; relayout() below puts everything where it belongs.
+  app.box.attach(app.ui, app.ui.create(app.window, NEUI_W_CUSTOMDRAW, 0, 0, 10, 10));
+  app.handle.attach(app.ui, app.ui.create(app.window, NEUI_W_CUSTOMDRAW, 0, 0, 10, 10));
+  app.wave.attach(app.ui, app.ui.create(app.window, NEUI_W_CUSTOMDRAW, 0, 0, 10, 10));
 
-  constexpr int margin = 16, gap = 12;
-  const int content_h = ch - 2 * margin - gap;
-  const int box_h     = content_h / 3;
-  const int wave_h    = content_h - box_h;
-  const int content_w = cw - 2 * margin;
+  app.handle.on_drag = [&app](int dy) {
+    app.split += dy;
+    app.relayout();
+  };
 
-  app.box.attach(app.ui,
-    app.ui.create(app.window, NEUI_W_CUSTOMDRAW,
-                  cx + margin, cy + margin, content_w, box_h));
-  app.wave.attach(app.ui,
-    app.ui.create(app.window, NEUI_W_CUSTOMDRAW,
-                  cx + margin, cy + margin + box_h + gap, content_w, wave_h));
+  app.read_content_rect();
+  app.split = (app.ch - App::k_handle_h) / 3;
+  app.relayout();
 
   app.ui.widgets->show(app.ui.session, app.window);
   const bool ok = host->run(app.ui.session);

@@ -1,9 +1,9 @@
 # What is neui, and how do you actually talk to it?
 
-Notes taken while wiring up `src/main.cpp` (two `CUSTOMDRAW` widgets: a hover
-box and a draggable sine). Everything here was read out of `libs/neui` at
-submodule commit `0077fe0`; where I'm repeating the project's own docs rather
-than something I exercised, I say so.
+Notes taken while wiring up `src/main.cpp` (three `CUSTOMDRAW` widgets: a hover
+box, a drag-to-resize split handle, and a draggable sine). Everything here was
+read out of `libs/neui` at submodule commit `0077fe0`; where I'm repeating the
+project's own docs rather than something I exercised, I say so.
 
 ---
 
@@ -202,6 +202,31 @@ coming even once the pointer leaves the widget.)
 Hover is easier than on raw AppKit — the host maintains the tracking area and
 sends `MOUSE_ENTER` / `MOUSE_LEAVE` for you.
 
+What is *not* there: **no cursor API in the public headers.** A
+`NEUI_CURSOR_EW_RESIZE` enum exists in `hosts/crossplatform/platform.h`, but
+it's host-internal — widgets like the SECTION scrollbar use it, and a client
+can't. So a splitter can't show a resize cursor, which is the one thing that
+would make `SplitHandle` feel finished. Smallest useful API addition I've found
+so far.
+
+### Drag that moves the thing you're dragging
+
+The split handle repositions *itself* mid-drag, which is the case where naive
+delta accumulation drifts. The fix falls out of the coordinate contract: `m.y`
+is local to where the handle is **now**, so
+
+```cpp
+on_drag(m.y - grab_y_);   // grab_y_ = m.y captured at MOUSE_BUTTON_DOWN
+```
+
+is not really a delta — it's "how far the seam is from the pointer", recomputed
+from scratch every event. Feed it into `split += dy` and the result is
+self-correcting: when the split clamps at a minimum pane size and the handle
+stops following the pointer, the offset simply stays large until the pointer
+comes back, and tracking resumes exactly where it should. Verified by tracing
+the split value through a drag into the clamp and back out — it pins at 48 and
+resumes cleanly with zero accumulated error.
+
 ---
 
 ## 5. Mapping it onto C++20
@@ -218,7 +243,7 @@ highest-value wrapper in the whole API.
 **b) Turn the flat callback back into virtual dispatch.** neui gives you one
 `onevent` and a widget id; C++ wants `component->paint()`. A `Component` base
 with `paint(Canvas&)` / `mouse(type, payload)` plus an id→object lookup is all
-it takes. With two components a linear scan is right; with fifty you'd want a
+it takes. With three components a linear scan is right; with fifty you'd want a
 `std::unordered_map<uint32_t, Component*>` — but note the *shape* is unchanged,
 because neui hands you a dense small integer, so a vector indexed by the low 16
 bits would also work.
@@ -226,6 +251,14 @@ bits would also work.
 **c) Carry the session + widget-api pair.** Nearly every call starts
 `(session, widget, ...)`. Bundling those into a `Ui` struct with `create()` /
 `invalidate()` members removes the most repetitive noise.
+
+A fourth job shows up as soon as anything is interactive: **give a component a
+way to report intent without knowing who's listening.** `SplitHandle` owns
+"the pointer moved N px from where you grabbed me" and nothing else — a
+`std::function<void(int)>` hands that to the App, which is the only thing that
+knows what a split is. In C that's a function pointer plus a `void*` context,
+i.e. exactly the shape neui itself uses; in C++ it's one member and no
+plumbing.
 
 What I deliberately *didn't* do: no RAII wrapper around widget handles. Widgets
 are owned by the host's tree and destroyed with their parent, so a
@@ -266,6 +299,19 @@ children is your job. (The neui examples deliberately don't do it either.) For
 a UI framework in 2026 this is the biggest thing that isn't in the box; whether
 that's a gap or a scope decision is one of the things worth forming an opinion
 on this week.
+
+Since the splitter forced a real layout pass anyway, `App::relayout()` is the
+only place in `main.cpp` that moves a widget, and both the drag and the resize
+handler call it. That's the shape any neui client ends up with: **one function
+that owns geometry, called from every event that could invalidate it.**
+
+One inconsistency found while wiring that up: **`NEUI_EVENT_RESIZE` is not
+emitted by the crossplatform host on macOS.** The native macOS host fires it
+(`hosts/macos/window.mm`), and the xpl host fires it on Win32, Linux and iOS —
+but `platform_macos.mm` has no `windowDidResize:` plumbing at all. So under
+`--xpl` on a Mac the panes keep their startup size when the window grows. That
+looks like a straightforward omission rather than a design decision, and it's a
+good candidate for a first patch upstream.
 
 ---
 
@@ -343,7 +389,8 @@ Open questions for the week:
 
 1. **Layout.** Nothing in the box, resize is manual. For a plugin editor that's
    survivable; for an app it isn't. Is a layout API planned, or is the position
-   "the client owns layout, full stop"?
+   "the client owns layout, full stop"? A splitter is the smallest interesting
+   test case and it already needs a hand-written `relayout()`.
 2. **Widget-vs-drawing boundary.** Everything interesting for audio is
    `CUSTOMDRAW` + compound/behavior. How far does the declarative component
    format stretch before you fall back to hand-painting?
@@ -356,4 +403,6 @@ Open questions for the week:
    sets, which is the right split. How does that hold up under a
    host-automation feedback loop?
 5. What does `--xpl` actually cost or gain? Worth putting real widgets (not
-   just `CUSTOMDRAW`) in front of both hosts and comparing.
+   just `CUSTOMDRAW`) in front of both hosts and comparing. Two host-parity
+   gaps already surfaced from one small app (no RESIZE under xpl-on-macOS, no
+   public cursor API) — how many more are there?
