@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+
+  <!-- Standard run-as-invoker (no UAC elevation) -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+
+  <!-- Common Controls 6.0: themed native widgets rather than Win95 chrome. -->
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+        type="win32"
+        name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0"
+        processorArchitecture="*"
+        publicKeyToken="6595b64144ccf1df"
+        language="*"/>
+    </dependentAssembly>
+  </dependency>
+
+  <!--
+    supportedOS GUIDs are required for Win10+ behaviours to engage at all.
+    Without them Windows gates off immersive dark mode and the uxtheme private
+    exports neui's win32 host uses for dark HMENU rendering become no-ops, and
+    the app silently falls back to Vista-era chrome. The OS picks the highest
+    GUID it recognises. (Same list neui's own examples ship - see
+    libs/neui/docs/theming.md.)
+  -->
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 and Windows 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+      <!-- Windows 8.1 -->
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}"/>
+      <!-- Windows 8 -->
+      <supportedOS Id="{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"/>
+      <!-- Windows 7 -->
+      <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"/>
+    </application>
+  </compatibility>
+
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <!--
+        Per-monitor v2 DPI awareness. The host also calls
+        SetProcessDpiAwarenessContext() at the top of WinMain, but declaring it
+        here makes the OS apply it BEFORE the process starts, which avoids a
+        blurry first paint on a HiDPI secondary monitor.
+      -->
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+
+      <!-- UTF-8 active code page (Win10 1903+): ANSI Win32 APIs take UTF-8. -->
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
+
+</assembly>

@@ -158,6 +158,24 @@ without an ABI break, at the cost of typo-at-runtime instead of typo-at-compile.
 `run()` blocks. If you already own an outer loop (DAW plugin, game frame), use
 `pump_once()` instead, which drains pending events and returns.
 
+One wrinkle on Windows: **your `main()` is not the process entry point, and its
+`argv` is lying to you.** The win32 host owns `WinMain`, and calls you with
+
+```c
+int main(int argc, wchar_t** argv);          // hosts/win32/window.cpp:22
+...
+wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+return main(argc, argv);                     // ...:1576
+```
+
+Since MSVC leaves `main` undecorated, that binds to a client's ordinary
+`int main(int, char**)` and hands it an array of `wchar_t*` through a `char**`
+parameter. Reading `argv[i]` as a C string then yields a one-character string
+(the UTF-16 low byte, then the NUL high byte) — no crash, just silently wrong.
+neui's own examples dodge this by taking `argv` and immediately `(void)`-ing
+it. `main.cpp` calls `CommandLineToArgvW` itself on Windows rather than
+pretending the parameter is what its type says.
+
 ---
 
 ## 4. `CUSTOMDRAW` + the painter — what this noodle actually uses
@@ -193,11 +211,29 @@ Conventions that matter:
 - Nothing repaints itself. State changed → call `widgets->invalidate(s, id)`.
   Invalidations coalesce to one repaint per loop tick.
 
-Drag handling has no capture call and no drag event: **a held-button drag
-arrives as `MOUSE_MOVE` with `NEUI_MK_LBUTTON` set in `buttonmap`.** That's
-what the sine widget keys off. (Verified in `hosts/macos/window.mm`
-`mouseDragged:`; AppKit's implicit per-view mouse capture means the moves keep
-coming even once the pointer leaves the widget.)
+Drag handling has no capture call and no drag event: a held-button drag is just
+`MOUSE_MOVE` between `BUTTON_DOWN` and `BUTTON_UP`. Every host captures the
+mouse for you, so the moves keep arriving once the pointer leaves the widget
+(AppKit's implicit per-view capture; `SetCapture` in the win32 host's
+`PaintedWndProc`).
+
+**Don't gate a drag on `buttonmap` alone — the hosts disagree about it.**
+
+| Host | `buttonmap` on `MOUSE_MOVE` during a drag |
+|---|---|
+| macOS native | `NEUI_MK_LBUTTON` — set explicitly in `mouseDragged:` |
+| crossplatform | real `MK_*` bits — forwards the platform `wParam` |
+| **win32 native** | **always `0`** — hardcoded in `ChildSubclassProc` |
+
+`d/events.h` documents the `NEUI_MK_*` bits as matching Win32's `MK_*` "so the
+win32 platform layer forwards wParam unmodified", and the xpl host does exactly
+that — but the *native* win32 host builds its move event as
+`{ wid, lx, ly, 0 }` (`hosts/win32/window.cpp`, `ChildSubclassProc`). So the
+obvious `if (m.buttonmap & NEUI_MK_LBUTTON)` drag check silently does nothing
+on Windows' default host. The portable version is `is_drag_move()` in
+`main.cpp`: latch a `dragging` flag on `BUTTON_DOWN`, clear it on `BUTTON_UP`,
+and consult `buttonmap` only when it's non-zero. This one looks like a
+straightforward host bug rather than a design choice.
 
 Hover is easier than on raw AppKit — the host maintains the tracking area and
 sends `MOUSE_ENTER` / `MOUSE_LEAVE` for you.
@@ -345,6 +381,8 @@ Deep docs live in `libs/neui/docs/` — `rendering-and-assets.md`,
 
 ## 8. Building it here
 
+macOS:
+
 ```bash
 cmake -S . -B build -G Ninja
 cmake --build build
@@ -352,11 +390,35 @@ cmake --build build
 ./build/neui-noodle.app/Contents/MacOS/neui-noodle --xpl    # neui-drawn host
 ```
 
+Windows (VS 2022 developer prompt; Ninja or the VS generator both work):
+
+```
+cmake -S . -B build
+cmake --build build --config Debug
+build\Debug\neui-noodle.exe            # native HWND host, Direct2D
+build\Debug\neui-noodle.exe --xpl      # neui-drawn host, also Direct2D
+```
+
+Linux (X11): needs the dev packages listed in `libs/neui/CLAUDE.md`; only the
+crossplatform host exists there, so `--xpl` is a no-op.
+
 Notes:
 
 - `MACOSX_BUNDLE` is required-ish: the AppKit host wants a real `.app` so
   `NSApp` can install a menubar and activate normally. Run the inner binary
   directly (not `open`) if you want `stdout` in your terminal.
+- **`WIN32` on `add_executable` is load-bearing, not cosmetic.** The win32 host
+  supplies `WinMain` itself (`hosts/win32/window.cpp`) and calls your `main()`
+  from it, after `SetProcessDpiAwarenessContext`, `CoInitializeEx`,
+  `set_hinstance` and `register_classes`. Build for the console subsystem and
+  none of that runs. Both keywords sit on one `add_executable` — each is a
+  no-op off its own platform.
+- The Windows app carries a manifest (`win/`) for per-monitor v2 DPI, UTF-8
+  ACP, and the `supportedOS` GUIDs that gate Win10/11 dark mode. It goes in via
+  an `.rc` plus `/MANIFEST:NO`, because link.exe's auto-generated manifest
+  otherwise collides with it. neui ships `hosts/win32/neui_host.{rc,manifest}`
+  that look intended for exactly this, but nothing compiles them — a static lib
+  can't hand an `RT_MANIFEST` to its consumer — so each app needs its own copy.
 - neui is C++17 internally and sets `CMAKE_CXX_STANDARD 17` — but inside its
   own directory scope, so it doesn't leak up. Our target is C++20 via
   `target_compile_features(... cxx_std_20)`.
@@ -384,6 +446,25 @@ Good:
   rather than leaving it to be discovered.
 - Two hosts on macOS from one client source is a genuinely useful property, and
   it's a strong argument that the abstraction line is drawn in the right place.
+- One `src/main.cpp` and one `CMakeLists.txt` really do cover macOS, Windows
+  and Linux. The platform-conditional client code is four lines of host-id
+  `#if` plus the wide-`argv` workaround; everything else is shared.
+
+Where it leaks — every one of these came out of writing one small app, which
+is the part that should worry you. They cluster in the same place: **the
+contract the headers state is not uniformly what the hosts do.**
+
+| Gap | Effect |
+|---|---|
+| `buttonmap` is always `0` on win32-native `MOUSE_MOVE` | The documented drag idiom silently doesn't work on Windows' default host |
+| No `NEUI_EVENT_RESIZE` from xpl-on-macOS | Layout freezes on window resize under `--xpl` |
+| No cursor API in the public headers | A client splitter can't show a resize cursor |
+| `main()`'s `argv` is `wchar_t**` on win32-native | `argv` is unusable; no diagnostic |
+
+None is hard to fix and none is architectural — but a client can't tell which
+documented behaviours are real without reading each host, and there is no
+conformance test pinning them. That's the gap worth raising: not any individual
+bug, but that nothing enforces host parity.
 
 Open questions for the week:
 
@@ -403,6 +484,6 @@ Open questions for the week:
    sets, which is the right split. How does that hold up under a
    host-automation feedback loop?
 5. What does `--xpl` actually cost or gain? Worth putting real widgets (not
-   just `CUSTOMDRAW`) in front of both hosts and comparing. Two host-parity
-   gaps already surfaced from one small app (no RESIZE under xpl-on-macOS, no
-   public cursor API) — how many more are there?
+   just `CUSTOMDRAW`) in front of both hosts and comparing — and worth asking
+   whether host parity should be a test suite rather than a convention, given
+   the table above.

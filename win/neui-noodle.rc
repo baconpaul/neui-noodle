@@ -1,0 +1,14 @@
+// Application resource script (Windows only).
+//
+// Embeds neui-noodle.manifest as CREATEPROCESS_MANIFEST_RESOURCE_ID (= 1) of
+// type RT_MANIFEST (= 24), which the loader reads at process start.
+//
+// Why an .rc rather than link.exe's /MANIFESTINPUT: MSBuild / link.exe also
+// auto-generate a manifest resource, and two of them collide with
+// "duplicate resource. type:MANIFEST, name:1". The .rc route plus
+// /MANIFEST:NO (set in CMakeLists.txt) is the clean way to win that fight -
+// it is what neui's own examples do.
+
+#include <winuser.h>
+
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "neui-noodle.manifest"

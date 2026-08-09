@@ -13,6 +13,13 @@
 // handles, one flat event callback. Everything below is a thin C++20 skin
 // over that; see doc/whatis_neui.md for the reasoning.
 
+#if defined(_WIN32)
+#  define WIN32_LEAN_AND_MEAN
+#  define NOMINMAX           // or windows.h's min/max macros eat std::max / std::clamp
+#  include <windows.h>
+#  include <shellapi.h>      // CommandLineToArgvW - see wants_xpl() below
+#endif
+
 #include <neui/neui.h>
 
 #include <algorithm>
@@ -21,6 +28,9 @@
 #include <cstring>
 #include <functional>
 #include <numbers>
+#if defined(_WIN32)
+#  include <cwchar>  // wcscmp, for the wide-argv workaround in wants_xpl()
+#endif
 
 namespace
 {
@@ -104,6 +114,24 @@ private:
   float               w_, h_;
   bool                focused_;
 };
+
+// Is this MOUSE_MOVE part of a held-button drag?
+//
+// There is no drag event and no capture call - a drag is just MOUSE_MOVE
+// between BUTTON_DOWN and BUTTON_UP. But the hosts disagree about the
+// buttonmap field on MOUSE_MOVE:
+//   macOS native  - sets NEUI_MK_LBUTTON explicitly on mouseDragged:
+//   crossplatform - forwards the real Win32 wParam / equivalent, so MK_LBUTTON
+//   win32 native  - hardcodes 0 (ChildSubclassProc, hosts/win32/window.cpp)
+// So the latched `dragging` flag is the portable gate, and buttonmap is only
+// consulted when the host actually populated it. Both hosts capture the mouse
+// on button-down, so the matching BUTTON_UP always arrives and the flag can't
+// get stuck.
+bool is_drag_move(bool dragging, uint32_t buttonmap)
+{
+  if (!dragging) return false;
+  return buttonmap == 0 || (buttonmap & NEUI_MK_LBUTTON) != 0;
+}
 
 // ---------------------------------------------------------------------------
 // Session-level handles the components need in order to talk back to neui
@@ -243,7 +271,7 @@ public:
       return true;
 
     case NEUI_EVENT_MOUSE_MOVE:
-      if (!dragging_ || !(m.buttonmap & NEUI_MK_LBUTTON)) return false;
+      if (!is_drag_move(dragging_, m.buttonmap)) return false;
       // m.y is local to where the handle is *now*, so this delta is really an
       // absolute "where should the seam be" measurement: it stays correct even
       // when the split clamps and the handle stops tracking the pointer.
@@ -320,9 +348,7 @@ public:
       return true;
 
     case NEUI_EVENT_MOUSE_MOVE:
-      // A held-button drag arrives as MOUSE_MOVE with NEUI_MK_LBUTTON set;
-      // there is no separate drag event and no explicit capture call.
-      if (!dragging_ || !(m.buttonmap & NEUI_MK_LBUTTON)) return false;
+      if (!is_drag_move(dragging_, m.buttonmap)) return false;
       set_phase(phase_ + static_cast<float>(m.x - last_x_) * k_rad_per_px);
       last_x_ = m.x;
       repaint();
@@ -471,6 +497,36 @@ bool NEUI_ABI on_event(void* token, neui_event_t* event)
   return false;
 }
 
+// Is --xpl on the command line?
+//
+// On Windows this deliberately ignores argv. The win32 host owns WinMain
+// (hosts/win32/window.cpp) and calls main() with the WIDE argv from
+// CommandLineToArgvW, against a local `int main(int, wchar_t**)` declaration -
+// so what actually arrives in a standard `char**` parameter is an array of
+// wchar_t*. Reading the command line ourselves is the honest way to get at it.
+// (neui's own examples sidestep this by taking argv and immediately voiding
+// it.)
+#if defined(_WIN32)
+bool wants_xpl(int /*argc*/, char** /*argv*/)
+{
+  int       wargc = 0;
+  wchar_t** wargv = ::CommandLineToArgvW(::GetCommandLineW(), &wargc);
+  if (!wargv) return false;
+  bool found = false;
+  for (int i = 1; i < wargc && !found; ++i)
+    found = (std::wcscmp(wargv[i], L"--xpl") == 0);
+  ::LocalFree(wargv);
+  return found;
+}
+#else
+bool wants_xpl(int argc, char** argv)
+{
+  for (int i = 1; i < argc; ++i)
+    if (std::strcmp(argv[i], "--xpl") == 0) return true;
+  return false;
+}
+#endif
+
 void* NEUI_ABI get_interface(void* /*token*/, const char* iface)
 {
   // neui asks the client for an interface by name, the mirror image of the
@@ -484,14 +540,10 @@ void* NEUI_ABI get_interface(void* /*token*/, const char* iface)
 
 int main(int argc, char* argv[])
 {
-  bool prefer_xpl = false;
-  for (int i = 1; i < argc; ++i)
-    if (std::strcmp(argv[i], "--xpl") == 0) prefer_xpl = true;
-
   // One call registers every host statically linked into this binary; then we
   // pick one by id (or pass nullptr for "first registered", native-first).
   neui_init();
-  neui_api_t* host = neui_get_api(prefer_xpl ? k_xpl_host : k_native_host);
+  neui_api_t* host = neui_get_api(wants_xpl(argc, argv) ? k_xpl_host : k_native_host);
   if (!host) host = neui_get_api(nullptr);
   if (!host)
   {
