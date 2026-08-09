@@ -2,10 +2,17 @@ cmake_minimum_required(VERSION 3.21)
 project(neui-noodle LANGUAGES C CXX)
 
 # Sandbox for evaluating the neui framework (libs/neui, a git submodule).
-# macOS only for now - the neui tree also builds on Windows / Linux, but this
-# noodle project only wires up the mac hosts.
-if(NOT APPLE)
-  message(FATAL_ERROR "neui-noodle is currently set up for macOS only")
+# macOS and Linux (X11) are wired up. The neui tree also builds on Windows,
+# but this noodle project does not link the win32 host yet.
+if(APPLE)
+  set(NOODLE_LINUX OFF)
+elseif(UNIX)
+  # Linux / X11: neui has no native host here, only the crossplatform one
+  # (Cairo software rendering blitted into an X window). Needs the X11 + Cairo
+  # dev packages - see libs/neui/CLAUDE.md for the apt/dnf list.
+  set(NOODLE_LINUX ON)
+else()
+  message(FATAL_ERROR "neui-noodle is set up for macOS and Linux (X11) only")
 endif()
 
 # We drive neui's C ABI from C++20. neui itself is C++17 internally; it sets
@@ -26,7 +33,8 @@ set(NEUI_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 add_subdirectory(libs/neui)
 
 # MACOSX_BUNDLE: the native AppKit host wants a real .app so NSApp can install
-# a menubar and activate the process normally.
+# a menubar and activate the process normally. It is a no-op keyword elsewhere,
+# so a plain ELF binary is what comes out on Linux.
 add_executable(neui-noodle MACOSX_BUNDLE src/main.cpp)
 target_compile_features(neui-noodle PRIVATE cxx_std_20)
 
@@ -35,18 +43,27 @@ target_compile_features(neui-noodle PRIVATE cxx_std_20)
 # here is what neui_get_api() can hand back:
 #   neui-macoshost -> "neui.host.macos"          (native AppKit / NSView tree)
 #   neui-xplhost   -> "neui.host.crossplatform"  (one surface, neui draws it all)
-target_link_libraries(neui-noodle PRIVATE neui neui-xplhost neui-macoshost)
+# There is no native Linux host, so there the xpl host is the only one - which
+# is also what main.cpp asks for as its "native" id on this platform.
+target_link_libraries(neui-noodle PRIVATE neui neui-xplhost)
+if(APPLE)
+  target_link_libraries(neui-noodle PRIVATE neui-macoshost)
+endif()
 
 target_compile_options(neui-noodle PRIVATE -Wall -Wextra)
 
 # neui and its host libs reference each other's symbols, so libneui.a legitimately
 # lands on the link line twice. Silence ld_prime's cosmetic warning about it
-# (neui does the same inside its own subtree).
-target_link_options(neui-noodle PRIVATE "-Wl,-no_warn_duplicate_libraries")
+# (neui does the same inside its own subtree). Apple-linker-only spelling - GNU
+# ld / lld reject the flag outright, and they don't warn about this anyway.
+if(APPLE)
+  target_link_options(neui-noodle PRIVATE "-Wl,-no_warn_duplicate_libraries")
+endif()
 
-# `cmake --build build --target run` - the bundle's inner binary, so stdout
-# still lands in the terminal.
+# `cmake --build build --target run`. TARGET_FILE resolves to the bundle's inner
+# binary on macOS (so stdout still lands in the terminal) and to the plain
+# executable everywhere else.
 add_custom_target(run
-  COMMAND "$<TARGET_BUNDLE_CONTENT_DIR:neui-noodle>/MacOS/neui-noodle"
+  COMMAND "$<TARGET_FILE:neui-noodle>"
   DEPENDS neui-noodle
   USES_TERMINAL)
