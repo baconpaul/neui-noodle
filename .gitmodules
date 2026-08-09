@@ -1,0 +1,3 @@
+[submodule "libs/neui"]
+	path = libs/neui
+	url = https://github.com/defiantnerd/neui
