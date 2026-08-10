@@ -100,6 +100,39 @@ if(APPLE)
   target_link_options(neui-noodle PRIVATE "-Wl,-no_warn_duplicate_libraries")
 endif()
 
+# neuiplusplus - the C++20 layer over neui's C API, plus a demo exercising it.
+# Header-only apart from one implementation TU (the dispatch trampoline and the
+# design-unit boundary).
+add_library(neuiplusplus STATIC src/neuiplusplus.cpp)
+target_include_directories(neuiplusplus PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(neuiplusplus PUBLIC cxx_std_20)
+target_link_libraries(neuiplusplus PUBLIC neui neui-xplhost)
+if(APPLE)
+  target_link_libraries(neuiplusplus PUBLIC neui-macoshost)
+endif()
+if(WIN32)
+  target_link_libraries(neuiplusplus PUBLIC neui-win32host)
+endif()
+
+add_executable(plusplusdemo WIN32 MACOSX_BUNDLE src/plusplusdemo.cpp ${NOODLE_WIN_SOURCES})
+target_link_libraries(plusplusdemo PRIVATE neuiplusplus)
+
+foreach(t neuiplusplus plusplusdemo)
+  if(MSVC)
+    target_compile_options(${t} PRIVATE /W4 /utf-8)
+  else()
+    # -Wsuggest-override closes the one hole in the capability-interface design:
+    # an override written without the keyword.
+    target_compile_options(${t} PRIVATE -Wall -Wextra -Wsuggest-override)
+  endif()
+endforeach()
+if(APPLE)
+  target_link_options(plusplusdemo PRIVATE "-Wl,-no_warn_duplicate_libraries")
+endif()
+if(MSVC)
+  target_link_options(plusplusdemo PRIVATE "/MANIFEST:NO")
+endif()
+
 # `cmake --build build --target run`. TARGET_FILE resolves to the bundle's inner
 # binary on macOS (so stdout still lands in the terminal) and to the plain
 # executable everywhere else. On Windows the app is a GUI-subsystem binary, so
