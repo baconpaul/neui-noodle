@@ -1,3 +1,6 @@
 [submodule "libs/neui"]
 	path = libs/neui
 	url = https://github.com/defiantnerd/neui
+[submodule "libs/sst-jucegui"]
+	path = libs/sst-jucegui
+	url = https://github.com/surge-synthesizer/sst-jucegui
