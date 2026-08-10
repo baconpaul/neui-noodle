@@ -12,30 +12,38 @@ Read at neui `0077fe0`, sst-jucegui and two-filters as checked out
 
 ## TL;DR
 
-**The painter is nearly there. The component layer isn't, and never was going
-to be — because sst-jucegui doesn't get its component layer from JUCE's
-*widgets* either.** It gets it from `juce::Component`, which is a lightweight
-in-process retained-mode drawing tree. neui's widget layer is a *native widget*
-abstraction (one HWND / NSView per widget). Those are different things, and
-conflating them is the trap.
+**The painter is nearly there, and the component layer has a better answer than
+"write one".**
 
-So `sst-neuigui` is not "port sst-jucegui onto neui widgets". It is:
+The instinct is that sst-jucegui needs `juce::Component` — a lightweight
+in-process retained-mode drawing tree — and that neui's *native widget* tree
+(one HWND / NSView per widget) is a different animal. That description is
+right; the conclusion drawn from it is wrong. Give **every accessible element
+its own `NEUI_W_CUSTOMDRAW` widget** and neui's widget tree does
+`juce::Component`'s job: bounds, parent/child, hit-testing, mouse routing with
+capture, hover enter/leave, focus and tab traversal, clipping to bounds,
+coalesced per-widget invalidation. You don't rebuild that. You adapt to it.
 
-1. a small number of `NEUI_W_CUSTOMDRAW` surfaces — **one per `NamedPanel`** is
-   the sweet spot; see §5,
-2. inside each, as much `juce::Component`-equivalent machinery as that panel
-   actually needs (a flat hit-test loop, not a full tree),
-3. the existing sst-jucegui components repainted through a thin `Graphics`
-   shim over `neui_painter_api_t`,
-4. all layout in zoom-independent **design units**, multiplied out at the
-   boundary — §5.1.
+So `sst-neuigui` is:
 
-Against that plan the neui gaps are **three parity bugs, seven small API
-additions, and two architectural changes** — consolidated as a hand-over list in
-**§9**. Most of the small ones are things neui already does internally and
-doesn't expose; the two architectural ones (render-passive child widgets, and an
-accessibility seam) are a single programme, and together they decide whether the
-per-control granularity that accessibility wants is affordable at all.
+1. one `NEUI_W_CUSTOMDRAW` per **accessible element** — knob, button, switch,
+   slider, meter — with decoration (labels, rules, panel chrome) painted by the
+   parent, so the widget tree *is* the accessibility tree (§5),
+2. a thin `Component` adapter turning neui's flat `onevent` into virtual
+   `paint` / mouse / key calls — an **adapter, not a framework**,
+3. the existing sst-jucegui paint code through a `Graphics` shim over
+   `neui_painter_api_t` (§3),
+4. `StyleSheet` and `Continuous` / `Discrete` ported straight across — they
+   contain no JUCE beyond `std::string`,
+5. all layout in zoom-independent **design units**, multiplied out at the
+   boundary (§5.1).
+
+That plan leans hard on neui's widget layer, which is the point — it uses most
+of neui rather than a corner of it. The price is that two structural problems in
+that layer become load-bearing: **a DXGI swap chain per painted widget** on
+win32 (§5.4) and **no accessibility seam at all** (§5.2). Those are the two
+architectural asks. Everything else is three parity bugs and seven small API
+additions. All of it is consolidated as a hand-over list in **§9**.
 
 ---
 
@@ -47,8 +55,8 @@ Counting `juce::` type references across its headers and sources:
 |---|---:|---|---|
 | Value types | ~266 | `Colour` 128, `Rectangle` 57, `Colours` 41, `String` 16, `Point` 14, `MathConstants` 10 | Mechanical. Write your own or share a small header. |
 | Drawing | ~182 | `Graphics` 85, `Justification` 39, `PathStrokeType` 16, `Font` 14, `ColourGradient` 10, `Path` 9, `AffineTransform` 9 | Maps onto neui's painter, modulo §3. |
-| **Component + input** | **~259** | **`Component` 112, `MouseEvent` 103, `KeyPress` 26, `ModifierKeys` 13, `MouseWheelDetails` 5** | **This is the work. Nothing in neui covers it.** |
-| Text editing | 25 | `TextEditor` | Needed for type-in. |
+| **Component + input** | **~259** | **`Component` 112, `MouseEvent` 103, `KeyPress` 26, `ModifierKeys` 13, `MouseWheelDetails` 5** | **Adapter surface, not reimplementation** — at one widget per element neui supplies the tree, hit-test, capture, hover and focus; you translate event shapes. |
+| Text editing | 25 | `TextEditor` | Possibly free: with a real widget tree you can drop a neui `INPUTBOX` in and inherit IME, clipboard, undo and selection. |
 | Menus | 20 | `PopupMenu` | Big gap — §2.3. |
 | Accessibility | ~25 | `AccessibilityHandler`, `AccessibilityRole` | Nothing in neui. |
 | Timers | 6 | `Timer` | Gap — §2.1. |
@@ -189,20 +197,31 @@ reachable from the client at all.
 
 ## 4. What you build in sst-neuigui (not neui's job)
 
-Be honest that this is the bulk of the work:
+Smaller than it first looks, because one widget per element hands most of it
+back to neui:
 
-- **The component tree.** Bounds, parent/child, z-order, hit-testing, mouse
-  routing with capture, hover enter/exit, focus and tab traversal, dirty-region
-  invalidation. This is `juce::Component`. ~1500–2500 lines.
-- **Text editing.** 25 `TextEditor` uses — type-in fields, the value overlay.
-  neui has `hosts/shared/text_edit.h` internally and real `INPUTBOX` widgets,
-  but on a single surface neither is reachable; you write it or overlay a real
-  neui widget on top of the canvas.
+- **A `Component` adapter, not a component tree.** neui already owns bounds,
+  parent/child, hit-testing, mouse capture, hover enter/leave, focus, clipping
+  and coalesced invalidation. What you write is the piece neui deliberately
+  leaves to the client: turning the flat `onevent` plus a widget id into
+  `component->paint(Canvas&)` / `mouseDown(...)` / `mouseDrag(...)`. That is an
+  id→object map and an event-shape translation — the same thing `src/main.cpp`
+  in this repo does for three components, scaled up.
+- **Value types.** `Colour`, `Rect`, `Point`, `Font`. Mechanical.
+- **Layout.** neui has no layout engine, but neither does JUCE — sst-jucegui
+  does manual arithmetic in `resized()`. You need a `resized()` equivalent
+  driven by your own `place()` (§5.1), which is parity, not a regression.
 - **The style sheet.** sst-jucegui's class/property/inheritance system is
   library-level and portable as-is — it needs a `Colour` and a `Font` type, not
   JUCE. Straight port.
 - **The data bindings.** `Continuous` / `Discrete` / `WithDataListener` have no
   JUCE in them beyond `std::string`. Straight port.
+
+And one thing gets *easier* than the single-surface route: **text editing.**
+With a real widget tree, a type-in field can be an actual neui `INPUTBOX`
+placed over the control, inheriting IME, clipboard, undo, selection and word
+navigation rather than reimplementing them. 25 `TextEditor` uses potentially
+collapse to widget creation plus a value round-trip.
 
 **One thing gets actively worse:** accessibility. sst-jucegui does real work
 there (`AccessibilityHandler`, `KeyboardTraverser`, `FocusDebugger`) and JUCE
@@ -214,9 +233,12 @@ that decides §5 rather than a footnote to it.
 
 ## 5. Granularity: how many CUSTOMDRAW widgets?
 
-The obvious framing is "one surface vs. one widget per control", and the
-obvious tiebreaker is zoom. **Both of those are wrong**, and it is worth being
-explicit about why, because the first draft of this document got it wrong.
+This is the decision everything else hangs off, and the obvious tiebreaker —
+zoom — is **the wrong one**. Worth being explicit about, because the first two
+drafts of this document got it wrong in opposite directions: draft one said
+zoom forces a single surface, draft two hedged to panel granularity to keep the
+widget count down. Both under-weighted accessibility, which is what actually
+decides it.
 
 ### 5.1 Zoom does not decide it
 
@@ -252,9 +274,9 @@ Rules that come with it:
 - **Mouse events arrive in zoomed logical px** — divide by `z` on the way in.
 - **Hairlines vanish.** A 1.0-unit stroke at z=0.75 is 0.75px; use
   `max(1.0f/z, w)`.
-- **Changing zoom is a `set_pos` per widget.** Nine calls at panel granularity,
-  two hundred at control granularity, and win32 exposes no
-  `BeginDeferWindowPos`, so expect a flash at the fine end.
+- **Changing zoom is a `set_pos` per widget** — ~80 calls at per-element
+  granularity, and win32 exposes no `BeginDeferWindowPos`, so expect a flash.
+  One-time per zoom change, so probably fine; worth watching in Phase 0a.
 - Inter-widget alignment quantizes to integers, so a continuous graphic
   spanning two widgets will show a seam at fractional zoom. Keep such things
   inside one widget.
@@ -290,15 +312,20 @@ stays expensive at every coarser one.
 
 ### 5.3 The three options
 
-| | One surface | **Per panel (~9)** | Per control (~200) |
+| | One surface | Per panel (~9) | **Per accessible element (~60–100)** |
 |---|---|---|---|
-| Component tree you write | Full `juce::Component` equivalent, ~1.5–2.5k lines | Flat hit-test loop per panel, ~10 lines of hover | Almost none |
-| Hover / focus / clip | All yours | neui gives it per panel; within-panel is yours | All from neui |
+| Component code you write | Full `juce::Component` equivalent, ~1.5–2.5k lines | Flat hit-test loop per panel, hover derivation, partial focus | **Adapter only** — id→object dispatch + event-shape translation |
+| Hover / focus / clip / capture | All yours | neui per panel; within-panel is yours | All from neui |
+| Text entry | Hand-written | Hand-written | A real `INPUTBOX` widget — IME, undo, clipboard free |
 | Invalidate granularity | Whole editor | One panel (~300×200) | One control |
-| Zoom | `painter->scale` | §5.1, 9 `set_pos` | §5.1, 200 `set_pos`, may flash |
-| Backend contexts | 1 | ~9 | **~200** — each painted widget owns a `paint_ctx` (`WidgetData::paint_ctx`), i.e. a D2D render target each |
-| Accessibility | Hand-built tree | Hand-built tree | **Platform tree free — but blocked on the seam above** |
+| Zoom | `painter->scale` | §5.1, 9 `set_pos` | §5.1, ~80 `set_pos`, may flash |
+| Backend contexts | 1 | ~9 | **~60–100 — one DXGI swap chain each on win32 (§5.4). The binding constraint.** |
+| Accessibility | Hand-built UIA/NSA tree | Hand-built UIA/NSA tree | **Platform tree free — blocked on the seam above** |
 | Overlays (tooltip, modal) | Free | `NEUI_ATTR_OVERLAY` widget on top | `NEUI_ATTR_OVERLAY` widget on top |
+| How much of neui you use | ~15% | ~25% | **Most of it** |
+
+Read down the right-hand column: it is better on every row except one. That one
+row is §5.4.
 
 ### 5.4 The one hard constraint: a DXGI swap chain per painted widget
 
@@ -347,18 +374,23 @@ makes when it marks decorative components inaccessible. For two-filters that is
 
 Gate it on one measurement, which costs twenty minutes: **put 100 and then 200
 `CUSTOMDRAW` widgets in a window on Windows and watch memory, show latency and
-resize smoothness.** If it holds, go straight to per-element and skip the
-component tree entirely. If it doesn't, fall back to panel granularity with the
-§5.1 discipline — and §9's Tier-3 change is what would lift the ceiling
-permanently.
+resize smoothness.** If it holds, go straight to per-element and write no
+component tree at all. If it doesn't, fall back to panel granularity with the
+§5.1 discipline — and §9's item 11 is what would lift the ceiling permanently.
 
-Either way you use maybe 15–20% of neui: `CUSTOMDRAW`, the painter, the
-mouse/key stream, frame management, clipboard, and (once it exists) embedding.
-The widget catalogue, grid, compound/behavior assets and tree APIs go unused.
-That is worth raising with its author, because **"be the canvas + window + input
-layer under a toolkit" is a different product from "be the toolkit"**, and neui
-is currently much more the second. The asks in §2 are close to exactly the list
-the first product needs and the second doesn't prioritise.
+**This is the version worth taking to neui's author**, because it is not the
+"use your framework as a bare canvas" story. At per-element granularity
+sst-neuigui uses *most* of neui — the widget tree, hit-testing, focus, capture,
+invalidation, `INPUTBOX` for type-in, popup menus, clipboard, frames and plugin
+windows — and adds the layer neui doesn't have and shouldn't: a styled,
+data-bound, audio-specific *look and behaviour* library. neui stays the
+component framework; sst-neuigui becomes a widget set on top of it.
+
+That is a far more natural division than the single-surface alternative, and
+it lines up with where neui's own TODO already points under *Audio-plugin /
+drawable framework*. The catch is that it puts real weight on two places the
+widget layer hasn't had to carry weight before — §5.4's swap chains and §5.2's
+missing accessibility seam — which is exactly what §9 asks for.
 
 ## 6. two-filters checklist
 
@@ -374,7 +406,7 @@ What the editor needs, and where it lands:
 | Continuous / Discrete data bindings | Straight port, no JUCE |
 | StyleSheet + light/dark built-ins | Straight port |
 | Preset menu, param context menus | **Blocked on §2.3** |
-| Value type-in | Own text editing (§4) |
+| Value type-in | A real neui `INPUTBOX` over the control (§4) |
 | Load/save patch | **Blocked on §2.5** |
 | Zoom | Client-side design units (§5.1); free if §2.6 lands |
 | CLAP plugin window | **Blocked on §2.2** |
@@ -382,20 +414,22 @@ What the editor needs, and where it lands:
 
 ## 7. Staged plan
 
-- **Phase 0 — prove the shim.** One `CUSTOMDRAW` panel, a hand-written
-  `Graphics` shim, and exactly two components: a `Knob` bound to a `Continuous`,
-  and a `NamedPanel` around it, in design units with a zoom slider. Style them
-  from a ported StyleSheet. This answers "does the paint code port
-  mechanically?" and "is §5.1 zoom convincing?" in a day or two, and it is the
-  cheapest possible test of the whole thesis.
-- **Phase 1 — panel granularity for real.** A panel base class: flat hit-test,
-  hover, capture, and the `place()` boundary. Port 5–6 more components. Decide
-  §5.3 here with real numbers rather than on paper.
+- **Phase 0a — measure the ceiling.** Before any porting: 100 then 200
+  `CUSTOMDRAW` widgets in one window on Windows; watch memory, show latency and
+  resize smoothness. Twenty minutes, and it decides §5.3 by measurement instead
+  of argument. Everything below assumes per-element granularity survives it.
+- **Phase 0b — prove the shim.** A `Graphics` shim and exactly two components:
+  a `Knob` bound to a `Continuous`, and a `NamedPanel` around it, each its own
+  widget, in design units with a zoom slider, styled from a ported StyleSheet.
+  Answers "does the paint code port mechanically?" and "is §5.1 zoom
+  convincing?" in a day or two — the cheapest possible test of the thesis.
+- **Phase 1 — the adapter.** A `Component` base wrapping a widget handle:
+  id→object dispatch, event-shape translation, the `place()` boundary. Port
+  5–6 more components onto it. If this stays small, the thesis holds.
 - **Phase 2 — the neui asks.** Timer and text metrics first (they block
   everything), then menus, then embedding. Each is a small, well-scoped PR
-  upstream, and §2/§3 are written to be handed over as-is. The accessibility
-  seam (§5.2) belongs here too, and its outcome decides whether control
-  granularity is ever worth moving to.
+  upstream, and §9 is written to be handed over as-is. The two architectural
+  items (11, 12) are a longer conversation and want starting early.
 - **Phase 3 — two-filters.** Only meaningful once Phase 2's embedding lands.
 
 ## 8. The part that isn't technical
