@@ -35,7 +35,7 @@
  * Capabilities are virtual interfaces rather than detected member functions on
  * purpose: `override` is compiler-checked and a duck-typed handler name is not.
  * The templates are confined to add<T> and bindingsFor<T>, where the payoff is
- * resolving the capability set with no RTTI. See interfaces.h.
+ * resolving the capability set with no RTTI. See capabilities.h.
  *
  * Build with -Wsuggest-override (clang: -Winconsistent-missing-override).
  * It closes the last hole: an override written without the keyword.

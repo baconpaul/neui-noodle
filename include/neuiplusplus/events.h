@@ -118,6 +118,26 @@ struct WheelEvent
             d = -d;
         return d;
     }
+
+    // How far a VALUE should move for this notch, sign included. THE CONVENTION
+    // HERE IS UP-INCREASES: fingers/wheel up raises a knob or fader.
+    //
+    // THIS DELIBERATELY DISAGREES WITH UPSTREAM AS OF neui 19c0c57, which chose
+    // up-decreases (hosts/shared/wheel_direction.h::wheel_value_sign) and applies
+    // it to the built-in KNOB and SLIDER. So an npp control and a native neui one
+    // in the same UI currently feel opposite - the very thing that commit set out
+    // to end. That is a known, temporary divergence, not an oversight:
+    //
+    //   - Tested by hand on a Mac trackpad, up-decreases feels backwards.
+    //   - Upstream's own commit message records that the evidence for
+    //     up-decreases being "the audio-plugin convention" was false: it rested
+    //     on the behavior runtime's comment claiming to match the built-in KNOB
+    //     while doing the reverse, and three of the four built-in paths were
+    //     up-increases before the change.
+    //
+    // Pending resolution with upstream. Like theirs, the sign lives in exactly
+    // one place, so realigning is a one-line edit.
+    float valueDelta() const { return physicalDelta(); }
 };
 
 struct KeyEvent

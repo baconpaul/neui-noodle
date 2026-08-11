@@ -161,9 +161,9 @@ struct Knob : npp::Component<Knob, npp::Paints, npp::MouseEvents, npp::KeyboardE
     void mouseDoubleClick(const npp::MouseEvent &) override { val.set(0.5f); }
     void mouseWheel(const npp::WheelEvent &e) override
     {
-        // A value control wants the direction the fingers moved, not the
-        // content-scrolling direction the OS handed us.
-        val.nudge(e.physicalDelta() * 0.02f);
+        // valueDelta, not physicalDelta: it carries the up-decreases convention
+        // that neui's own KNOB and SLIDER follow.
+        val.nudge(e.valueDelta() * 0.02f);
     }
 
     // The actions the declared slider role obliges us to perform. An AT
@@ -301,9 +301,7 @@ struct Slider : npp::Component<Slider, npp::Paints, npp::MouseEvents, npp::Keybo
 
     void mouseWheel(const npp::WheelEvent &e) override
     {
-        // A value control wants the direction the fingers moved, not the
-        // content-scrolling direction the OS handed us.
-        val.nudge(e.physicalDelta() * 0.02f);
+        val.nudge(e.valueDelta() * 0.02f);
     }
 
     void setFromX(float x)
