@@ -294,6 +294,8 @@ struct Slider : npp::Component, npp::Paintable, npp::MouseHandling, npp::Keyboar
         repaint();
     }
 
+    void mouseWheel(const npp::WheelEvent &e) override { val.nudge(e.delta * 0.02f); }
+
     void setFromX(float x)
     {
         const float w = std::max(1.0f, bounds().getWidth() - handleW);
