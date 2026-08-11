@@ -509,8 +509,11 @@ int main(int argc, char *argv[])
                      "neuiplusplus demo"};
 
     auto &panel = frame.add<Panel>(knobValue, sliderValue);
+    // setBounds fires resized(), so this both places and lays out the panel.
     panel.setBounds(frame.clientBounds().atOrigin());
-    panel.resized();
+    // RESIZE is delivered to the FRAME and nowhere else, so this is the only
+    // hook there is for following the window.
+    frame.onResize = [&panel](npp::Rect client) { panel.setBounds(client.atOrigin()); };
 
     // Both controls drive the same readout - the whole point of the callback -
     // and each republishes its own accessible value, since a hand-painted

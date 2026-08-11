@@ -58,6 +58,8 @@ void ComponentCore::registerChild(ComponentCore &child, const detail::Bindings &
     child.applyBounds();
 }
 
+void ComponentCore::registerSelf(const detail::Bindings &b) { session_->bind(widget_, b); }
+
 // ---------------------------------------------------------------------------
 // Geometry
 
@@ -65,6 +67,14 @@ void ComponentCore::setBounds(Rect r)
 {
     bounds_ = r;
     applyBounds();
+    // Resizes means "I lay out my children", so it has to fire on every bounds
+    // change or a component that names it silently never lays out - exactly the
+    // failure the capability design exists to prevent. The binding is where the
+    // capability set lives, so ask the session for our own rather than adding a
+    // virtual here that a component without Resizes would still carry.
+    if (session_)
+        if (auto *b = session_->lookup(widget_); b && b->resized)
+            b->resized(b->obj);
 }
 
 void ComponentCore::applyBounds()
@@ -196,6 +206,11 @@ Frame::Frame(Session &s, const char *widgetType, Rect bounds, const char *title)
 {
     if (title)
         s.widgets()->set_text(s.raw(), widget(), title);
+    // A root has no parent's add<T> to register it, and RESIZE arrives on the
+    // frame's own id - so without this the event has nowhere to land. Safe here
+    // in the constructor body: the thunk only fires from the event loop, by
+    // which time this Frame is complete.
+    registerSelf(detail::bindingsFor<Frame>(*this));
 }
 
 void Frame::show() { session().widgets()->show(session().raw(), widget()); }

@@ -6,6 +6,7 @@
 #ifndef NEUIPLUSPLUS_COMPONENT_H
 #define NEUIPLUSPLUS_COMPONENT_H
 
+#include <functional>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -173,6 +174,16 @@ class ComponentCore
      */
     ComponentCore(Session &s, neui_widget_t w, Rect bounds, RootTag);
 
+    /**
+     * @brief Put THIS component in the session's dispatch table.
+     *
+     * A child never calls this - `add<T>` registers it, and also sets
+     * `emit_events` and the tab stop from its capability set. A ROOT has no
+     * parent to do that, so it registers itself, and deliberately touches
+     * neither of those: a frame's hit-testing is the host's business.
+     */
+    void registerSelf(const detail::Bindings &b);
+
     /// @name Capability-gated operations
     /// Reachable only through detail::CoreAccess, which every interface routes
     /// through; see detail/CoreAccess.h for why one friend serves them all.
@@ -222,10 +233,25 @@ class Component : public ComponentCore, public Caps<Derived>...
  * @brief A top-level window (APPWINDOW / PLUGWINDOW / DIALOG).
  *
  * Not created through `add<T>` - it has no parent component - so it is the one
- * place a component is constructed directly. It names no capabilities: the frame
- * paints nothing and takes no input, its children do.
+ * place a component is constructed directly. It paints nothing and takes no
+ * input; its children do. The one capability it names is Resizes, because
+ * `NEUI_EVENT_RESIZE` is delivered to the FRAME and nowhere else - a child
+ * component never sees one, however it is declared.
+ *
+ * @note Resizing is a CALLBACK rather than an override, because a component is
+ * a leaf type: the capability set is resolved against the exact type, so
+ * subclassing Frame would not work. Assign @ref onResize.
+ *
+ * @code
+ * npp::Frame frame{*session, NEUI_W_APPWINDOW, {140, 140, 600, 400}, "noodle"};
+ * auto &panel = frame.add<Panel>();
+ * frame.onResize = [&panel](npp::Rect client) {
+ *     panel.setBounds(client.atOrigin());
+ *     panel.resized();
+ * };
+ * @endcode
  */
-class Frame : public Component<Frame>
+class Frame : public Component<Frame, interfaces::Resizes>
 {
   public:
     /** @param widgetType one of the `NEUI_W_*` top-level types.
@@ -238,6 +264,22 @@ class Frame : public Component<Frame>
      *        menubar band. Lay out against this, not against the create size.
      */
     Rect clientBounds() const;
+
+    /**
+     * @brief Called with the new @ref clientBounds after the host resizes the
+     *        window.
+     * @note Which hosts fire it is neui's business, not this library's - the
+     *       native hosts do; the crossplatform host does not on every platform.
+     *       So do the initial layout yourself rather than waiting for the first
+     *       call.
+     */
+    std::function<void(Rect)> onResize;
+
+    void resized() override
+    {
+        if (onResize)
+            onResize(clientBounds());
+    }
 };
 
 } // namespace neuiplusplus

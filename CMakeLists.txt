@@ -36,6 +36,12 @@ set(NEUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(NEUI_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 add_subdirectory(libs/neui)
 
+# neuiplusplus - the C++20 layer over neui's C API, and what both programs here
+# are written against. Its own library with its own CMakeLists
+# (libs/neuiplusplus), consumed the way any outside project would consume it; it
+# hard-errors if the neui targets are not already defined, hence the order.
+add_subdirectory(libs/neuiplusplus)
+
 # On Windows the app carries a manifest resource (per-monitor v2 DPI, UTF-8
 # ACP, and the supportedOS GUIDs that gate Win10/11 dark mode). Empty
 # elsewhere.
@@ -58,30 +64,22 @@ endif()
 #                   subsystem would bypass all of that.
 # On Linux a plain ELF binary comes out.
 add_executable(neui-noodle WIN32 MACOSX_BUNDLE src/main.cpp ${NOODLE_WIN_SOURCES})
-target_compile_features(neui-noodle PRIVATE cxx_std_20)
 
-# neui splits into: the registry/core lib (neui) + one static lib per host.
-# neui_init() only registers hosts that were compiled in, so the set linked
-# here is what neui_get_api() can hand back:
+# neuiplusplus carries neui and every host static lib that this neui build
+# produced, so neui_get_api() here can hand back any of:
 #   neui-macoshost -> "neui.host.macos"          (native AppKit / NSView tree)
 #   neui-win32host -> "neui.host.win32"          (native HWND tree, Direct2D)
 #   neui-xplhost   -> "neui.host.crossplatform"  (one surface, neui draws it all)
 # There is no native Linux host, so there the xpl host is the only one - which
 # is also what main.cpp asks for as its "native" id on this platform.
-target_link_libraries(neui-noodle PRIVATE neui neui-xplhost)
-if(APPLE)
-  target_link_libraries(neui-noodle PRIVATE neui-macoshost)
-endif()
-if(WIN32)
-  target_link_libraries(neui-noodle PRIVATE neui-win32host)
-endif()
+target_link_libraries(neui-noodle PRIVATE neuiplusplus)
 
 if(MSVC)
   # /W4 is the level neui itself builds at. CMP0092 (NEW at our 3.21 floor)
   # already keeps /W3 out of the default flags, so there is nothing to strip.
   # /utf-8 makes source and execution charsets UTF-8, matching the manifest's
-  # UTF-8 ACP declaration.
-  target_compile_options(neui-noodle PRIVATE /W4 /utf-8)
+  # UTF-8 ACP declaration. /w14263 is the MSVC spelling of -Wsuggest-override.
+  target_compile_options(neui-noodle PRIVATE /W4 /utf-8 /w14263)
   # link.exe auto-generates a manifest resource that collides with the one
   # win/neui-noodle.rc embeds ("duplicate resource. type:MANIFEST, name:1").
   # Turn the generated one off and let the .rc win.
@@ -89,24 +87,14 @@ if(MSVC)
   set_property(TARGET neui-noodle APPEND PROPERTY
     LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/win/neui-noodle.manifest")
 else()
-  target_compile_options(neui-noodle PRIVATE -Wall -Wextra)
+  # -Wsuggest-override closes the one hole in the capability-interface design:
+  # an override written without the keyword. -Wl,-no_warn_duplicate_libraries
+  # comes through neuiplusplus as an INTERFACE link option.
+  target_compile_options(neui-noodle PRIVATE -Wall -Wextra -Wsuggest-override)
 endif()
 
-# neui and its host libs reference each other's symbols, so libneui.a legitimately
-# lands on the link line twice. Silence ld_prime's cosmetic warning about it
-# (neui does the same inside its own subtree). Apple-linker-only spelling - GNU
-# ld / lld reject the flag outright, and they don't warn about this anyway.
-if(APPLE)
-  target_link_options(neui-noodle PRIVATE "-Wl,-no_warn_duplicate_libraries")
-endif()
-
-# neuiplusplus - the C++20 layer over neui's C API. Its own library with its own
-# CMakeLists (libs/neuiplusplus), consumed here the way any other project would
-# consume it; it hard-errors if the neui targets are not already defined, which
-# is why it comes after add_subdirectory(libs/neui) above.
-add_subdirectory(libs/neuiplusplus)
-
-# ...and a demo exercising it.
+# The second program: a knob, a slider and a file picker, exercising more of the
+# library than the noodle sandbox does.
 add_executable(plusplusdemo WIN32 MACOSX_BUNDLE src/plusplusdemo.cpp ${NOODLE_WIN_SOURCES})
 target_link_libraries(plusplusdemo PRIVATE neuiplusplus)
 

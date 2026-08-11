@@ -127,9 +127,17 @@ detail::Bindings *Session::lookup(neui_widget_t w)
 void Session::setZoom(float z)
 {
     zoom_ = std::max(0.1f, z);
-    for (auto &b : table_)
-        if (b.self)
-            b.self->setBounds(b.self->bounds()); // re-applies with the new scale
+    // By index, re-reading the slot each time: setBounds now runs client
+    // resized() code, which may create a component and grow table_ underneath a
+    // range-for. Roots are skipped - a frame's bounds are screen-relative and
+    // its size is the host's business, so re-applying them here would drag the
+    // window across the desktop on a zoom change.
+    for (std::size_t i = 0; i < table_.size(); ++i)
+    {
+        ComponentCore *c = table_[i].self;
+        if (c && c->parent() != nullptr)
+            c->setBounds(c->bounds()); // re-applies with the new scale
+    }
 }
 
 // ---------------------------------------------------------------------------
