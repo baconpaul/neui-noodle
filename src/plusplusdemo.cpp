@@ -149,7 +149,21 @@ struct Knob : npp::Component<Knob, npp::Paints, npp::MouseEvents, npp::KeyboardE
         // back where it was grabbed. It handles the hide itself, so there is no
         // setCursor(hidden) here - the hover cursor set in the constructor
         // stands throughout.
+        //
+        // NOT ON LINUX for now. neui builds relative mode on XWarpPointer, and
+        // under XWayland (GNOME/Mutter here) the warp appears to succeed - the
+        // echo lands back on the anchor - but motion delivery then stops dead
+        // for the rest of the button-held gesture. The knob takes the first
+        // delta and freezes, which is worse than not having unbounded travel at
+        // all. Bounded drags work fine, so degrade to one. Bug is filed against
+        // neui; the real fix belongs in its host, where
+        // platform_supports_relative_pointer() should report false on XWayland
+        // and let begin_relative return false the way d/pointer.h promises.
+        // This guard is deliberately the whole platform rather than an XWayland
+        // probe: a demo should not be linking X11 to ask.
+#ifndef __linux__
         beginRelativeDrag();
+#endif
         repaint();
     }
     void mouseDrag(const npp::MouseEvent &e) override
