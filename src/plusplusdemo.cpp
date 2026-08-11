@@ -65,11 +65,30 @@ struct Value
 // ---------------------------------------------------------------------------
 // Knob - drag vertically. Paintable + MouseHandling, nothing else.
 
-struct Knob : npp::Component, npp::Paintable, npp::MouseHandling
+struct Knob : npp::Component, npp::Paintable, npp::MouseHandling, npp::KeyboardHandling,
+              npp::FocusHandling
 {
     Knob(npp::Parent p, Value &value) : Component(p), val(value)
     {
         setCursor(npp::Cursor::openHand); // "grab me"
+        // Declaring slider makes the AT offer increment / decrement, which
+        // arrive as LEFT / RIGHT on a hand-painted widget - hence
+        // KeyboardHandling above. Declare the real-world range too, so the AT
+        // announces something meaningful rather than "0.62".
+        setAccessibleRole(npp::Role::slider);
+        setAccessibleName(val.label.c_str());
+        setAccessibleValueRange(0.0f, 100.0f, 1.0f);
+        publishValue();
+    }
+
+    // The value lives in client state, so nothing tells the AT about it but us.
+    void publishValue()
+    {
+        char text[32];
+        std::snprintf(text, sizeof text, "%.0f%%", double(val.get() * 100.0f));
+        setAccessibleValue(val.get());
+        setAccessibleValueText(text);
+        notifyAccessible(npp::A11yChange::value);
     }
 
     void paint(npp::Canvas &g) override
@@ -83,6 +102,8 @@ struct Knob : npp::Component, npp::Paintable, npp::MouseHandling
 
         g.fillEllipse(face, pal.panel);
         g.drawEllipse(face, 1.0f, hovered ? pal.hot : pal.edge);
+        if (focused)
+            g.drawEllipse(face.expanded(1.0f), 1.0f, pal.accent);
 
         // Value arc. -135deg to +135deg, clockwise from bottom-left.
         const float a0 = k_two_pi * 0.375f;
@@ -140,16 +161,47 @@ struct Knob : npp::Component, npp::Paintable, npp::MouseHandling
     void mouseDoubleClick(const npp::MouseEvent &) override { val.set(0.5f); }
     void mouseWheel(const npp::WheelEvent &e) override { val.nudge(e.delta * 0.02f); }
 
+    // The actions the declared slider role obliges us to perform. An AT
+    // increment / decrement arrives here as an ordinary key event.
+    bool keyPressed(const npp::KeyEvent &e) override
+    {
+        const float step = e.mods.fine() ? 0.01f : 0.05f;
+        if (e.keyCode == NEUI_KEY_RIGHT || e.keyCode == NEUI_KEY_UP)
+        {
+            val.nudge(step);
+            return true;
+        }
+        if (e.keyCode == NEUI_KEY_LEFT || e.keyCode == NEUI_KEY_DOWN)
+        {
+            val.nudge(-step);
+            return true;
+        }
+        return false;
+    }
+
+    void focusGained() override
+    {
+        focused = true;
+        repaint();
+    }
+    void focusLost() override
+    {
+        focused = false;
+        repaint();
+    }
+
     Value &val;
     float anchorY{0.0f};
     bool hovered{false};
     bool dragging{false};
+    bool focused{false};
 };
 
 // ---------------------------------------------------------------------------
 // Slider - drag horizontally, absolute position.
 
-struct Slider : npp::Component, npp::Paintable, npp::MouseHandling
+struct Slider : npp::Component, npp::Paintable, npp::MouseHandling, npp::KeyboardHandling,
+                npp::FocusHandling
 {
     // Deliberately NOT a relative-pointer drag: this maps position to value
     // absolutely, so it wants the pointer bounded. Relative mode is for
@@ -157,6 +209,46 @@ struct Slider : npp::Component, npp::Paintable, npp::MouseHandling
     Slider(npp::Parent p, Value &value) : Component(p), val(value)
     {
         setCursor(npp::Cursor::ewResize); // it drags horizontally
+        setAccessibleRole(npp::Role::slider);
+        setAccessibleName(val.label.c_str());
+        setAccessibleValueRange(0.0f, 100.0f, 1.0f);
+        publishValue();
+    }
+
+    void publishValue()
+    {
+        char text[32];
+        std::snprintf(text, sizeof text, "%.0f%%", double(val.get() * 100.0f));
+        setAccessibleValue(val.get());
+        setAccessibleValueText(text);
+        notifyAccessible(npp::A11yChange::value);
+    }
+
+    bool keyPressed(const npp::KeyEvent &e) override
+    {
+        const float step = e.mods.fine() ? 0.01f : 0.05f;
+        if (e.keyCode == NEUI_KEY_RIGHT || e.keyCode == NEUI_KEY_UP)
+        {
+            val.nudge(step);
+            return true;
+        }
+        if (e.keyCode == NEUI_KEY_LEFT || e.keyCode == NEUI_KEY_DOWN)
+        {
+            val.nudge(-step);
+            return true;
+        }
+        return false;
+    }
+
+    void focusGained() override
+    {
+        focused = true;
+        repaint();
+    }
+    void focusLost() override
+    {
+        focused = false;
+        repaint();
     }
 
     void paint(npp::Canvas &g) override
@@ -174,6 +266,8 @@ struct Slider : npp::Component, npp::Paintable, npp::MouseHandling
         const float hx = track.getX() + track.getWidth() * val.get() - handleW * 0.5f;
         const npp::Rect handle{hx, b.getCentreY() - 9.0f, handleW, 18.0f};
         g.fillRoundRect(handle, 2.0f, hovered ? pal.hot : pal.ink);
+        if (focused)
+            g.drawRoundRect(handle.expanded(2.0f), 3.0f, 1.0f, pal.accent);
 
         g.drawText(val.label, b, 12.0f, pal.inkDim, npp::HAlign::left, npp::VAlign::bottom);
     }
@@ -212,6 +306,7 @@ struct Slider : npp::Component, npp::Paintable, npp::MouseHandling
     Value &val;
     bool hovered{false};
     bool dragging{false};
+    bool focused{false};
 };
 
 // ---------------------------------------------------------------------------
@@ -272,22 +367,35 @@ struct Button : npp::Component, npp::Paintable, npp::MouseHandling
 
 struct Readout : npp::Component, npp::Paintable
 {
-    Readout(npp::Parent p, Value &a, Value &b) : Component(p), knob(a), slider(b) {}
+    Readout(npp::Parent p, Value &a, Value &b) : Component(p), knob(a), slider(b)
+    {
+        // Not interactive, but it carries information a screen-reader user
+        // wants, so it announces as static text rather than being hidden.
+        setAccessibleRole(npp::Role::staticText);
+        publishText();
+    }
+
+    void publishText()
+    {
+        std::snprintf(line, sizeof line, "%s %.3f          %s %.3f", knob.label.c_str(),
+                      double(knob.get()), slider.label.c_str(), double(slider.get()));
+        // A static-text node speaks its NAME, and ours is client-drawn text the
+        // framework cannot see, so publish it and say it changed.
+        setAccessibleName(line);
+        notifyAccessible(npp::A11yChange::name);
+    }
 
     void paint(npp::Canvas &g) override
     {
         const auto b = g.bounds();
         g.fillRoundRect(b, 3.0f, pal.panel);
         g.drawRoundRect(b, 3.0f, 1.0f, pal.edge);
-
-        char line[128];
-        std::snprintf(line, sizeof line, "%s %.3f          %s %.3f", knob.label.c_str(),
-                      double(knob.get()), slider.label.c_str(), double(slider.get()));
         g.drawText(line, b, 15.0f, pal.ink, npp::HAlign::centre, npp::VAlign::middle);
     }
 
     Value &knob;
     Value &slider;
+    char line[128]{};
 };
 
 // ---------------------------------------------------------------------------
@@ -295,7 +403,13 @@ struct Readout : npp::Component, npp::Paintable
 
 struct FileInfo : npp::Component, npp::Paintable
 {
-    explicit FileInfo(npp::Parent p) : Component(p) {}
+    explicit FileInfo(npp::Parent p) : Component(p)
+    {
+        // Left alone it would report as an empty GROUP, which is a node an AT
+        // user has to navigate past for nothing. It carries text, so say so.
+        setAccessibleRole(npp::Role::staticText);
+        setAccessibleName(text.c_str());
+    }
 
     void paint(npp::Canvas &g) override
     {
@@ -309,11 +423,17 @@ struct FileInfo : npp::Component, npp::Paintable
         std::snprintf(line, sizeof line, "%s  -  %.1f KB (%llu bytes)", name.c_str(),
                       double(bytes) / 1024.0, static_cast<unsigned long long>(bytes));
         text = line;
-        repaint();
+        publish();
     }
     void showMessage(std::string m)
     {
         text = std::move(m);
+        publish();
+    }
+    void publish()
+    {
+        setAccessibleName(text.c_str());
+        notifyAccessible(npp::A11yChange::name);
         repaint();
     }
 
@@ -385,9 +505,10 @@ int main(int argc, char *argv[])
 
     // Both of these are crossplatform-host-only, and silently absent elsewhere -
     // report them so "the cursor did nothing" is diagnosable at a glance.
-    std::fprintf(stderr, "host=%s  cursor=%s  relative-pointer=%s  file-dialog=%s\n",
+    std::fprintf(stderr, "host=%s  cursor=%s  relative-pointer=%s  file-dialog=%s  a11y=%s\n",
                  xpl ? "crossplatform" : "native", session->attrs() ? "yes" : "no",
-                 session->pointer() ? "yes" : "no", session->hasFileDialog() ? "yes" : "no");
+                 session->pointer() ? "yes" : "no", session->hasFileDialog() ? "yes" : "no",
+                 session->a11y() ? "yes" : "no");
 
     Value knobValue, sliderValue;
     knobValue.label = "knob";
@@ -400,9 +521,19 @@ int main(int argc, char *argv[])
     panel.setBounds(frame.clientBounds().atOrigin());
     panel.resized();
 
-    // Both controls drive the same readout - the whole point of the callback.
-    knobValue.onChange = [&panel] { panel.readout.repaint(); };
-    sliderValue.onChange = [&panel] { panel.readout.repaint(); };
+    // Both controls drive the same readout - the whole point of the callback -
+    // and each republishes its own accessible value, since a hand-painted
+    // control's value lives in client state and neui cannot see it change.
+    knobValue.onChange = [&panel] {
+        panel.knob.publishValue();
+        panel.readout.publishText();
+        panel.readout.repaint();
+    };
+    sliderValue.onChange = [&panel] {
+        panel.slider.publishValue();
+        panel.readout.publishText();
+        panel.readout.repaint();
+    };
 
     panel.pick.onClick = [&panel, &frame, &session] {
         npp::FileDialogOptions opts;

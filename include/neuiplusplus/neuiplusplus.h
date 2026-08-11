@@ -44,6 +44,7 @@
 #ifndef NEUIPLUSPLUS_NEUIPLUSPLUS_H
 #define NEUIPLUSPLUS_NEUIPLUSPLUS_H
 
+#include "a11y.h"
 #include "canvas.h"
 #include "color.h"
 #include "component.h"

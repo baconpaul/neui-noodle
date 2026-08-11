@@ -56,6 +56,7 @@ std::unique_ptr<Session> Session::create(neui_api_t *host)
     s->pointer_ =
         static_cast<neui_pointer_api_t *>(host->get_interface(s->sess_, NEUI_API_POINTER));
     s->notify_ = static_cast<neui_notify_api_t *>(host->get_interface(s->sess_, NEUI_API_NOTIFY));
+    s->a11y_ = static_cast<neui_a11y_api_t *>(host->get_interface(s->sess_, NEUI_API_A11Y));
 
     s->host_ = host;
     return s;
@@ -350,6 +351,13 @@ void Component::registerChild(Component &child, const detail::Bindings &b)
     session_->widgets()->set_emit_events(session_->raw(), child.widget(), b.wantsInput());
     if (b.focus)
         session_->widgets()->set_tab_stop(session_->raw(), child.widget(), true);
+
+    // NO automatic role. An earlier version defaulted non-interactive
+    // components to Role::none as a "decorative" convenience, which was wrong:
+    // ROLE_NONE removes the node AND ITS WHOLE SUBTREE, so a plain container
+    // panel took every control in the editor out of the tree with it. Roles are
+    // declared explicitly, per widget, by the widget that knows what it is; a
+    // container left alone reports ROLE_GROUP, which is exactly right for it.
     child.applyBounds();
 }
 
@@ -422,6 +430,49 @@ void Component::endRelativeDrag()
 {
     if (session_ && session_->pointer())
         session_->pointer()->end_relative(session_->raw());
+}
+
+void Component::setAccessibleRole(Role r)
+{
+    roleDeclared_ = true;
+    if (session_ && session_->a11y())
+        session_->a11y()->set_role(session_->raw(), widget_, neui_a11y_role_t(r));
+}
+
+void Component::setAccessibleName(const char *utf8)
+{
+    if (session_ && session_->a11y())
+        session_->a11y()->set_name(session_->raw(), widget_, utf8);
+}
+
+void Component::setAccessibleDescription(const char *utf8)
+{
+    if (session_ && session_->a11y())
+        session_->a11y()->set_description(session_->raw(), widget_, utf8);
+}
+
+void Component::setAccessibleValueRange(float min, float max, float step)
+{
+    if (session_ && session_->a11y())
+        session_->a11y()->set_value_range(session_->raw(), widget_, min, max, step);
+}
+
+void Component::setAccessibleValue(float normalized)
+{
+    if (session_ && session_->a11y())
+        session_->a11y()->set_value(session_->raw(), widget_, normalized);
+}
+
+void Component::setAccessibleValueText(const char *utf8)
+{
+    if (session_ && session_->a11y())
+        session_->a11y()->set_value_text(session_->raw(), widget_, utf8);
+}
+
+void Component::notifyAccessible(A11yChange c)
+{
+    if (session_ && session_->a11y())
+        session_->a11y()->notify(session_->raw(), widget_, neui_a11y_change_t(c));
 }
 
 // ---------------------------------------------------------------------------

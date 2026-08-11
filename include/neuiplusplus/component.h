@@ -33,6 +33,7 @@
 
 #include <neui/neui.h>
 
+#include "a11y.h"
 #include "canvas.h"
 #include "cursor.h"
 #include "events.h"
@@ -155,6 +156,24 @@ class Component
     bool beginRelativeDrag();
     void endRelativeDrag();
 
+    // ---- accessibility -----------------------------------------------------
+    // Declaring an ACTIONABLE role (slider, button, checkbox...) obliges the
+    // component to handle that role's keys - see a11y.h. Components that
+    // declare nothing and handle no input are hidden from the AT rather than
+    // announced as anonymous groups.
+
+    void setAccessibleRole(Role);
+    void setAccessibleName(const char *);
+    void setAccessibleDescription(const char *);
+    // Real-world range behind the normalised value, so an AT can say
+    // "-6.0 dB" rather than "0.62". step 0 = continuous.
+    void setAccessibleValueRange(float min, float max, float step = 0.0f);
+    void setAccessibleValue(float normalized);
+    void setAccessibleValueText(const char *);
+    // Client-owned state changed. neui raises this itself for its own widgets,
+    // but a hand-painted control's value lives in client state, so it must.
+    void notifyAccessible(A11yChange);
+
     // ---- children ----------------------------------------------------------
 
     template <class T, class... Args> T &add(Args &&...args)
@@ -190,6 +209,7 @@ class Component
     bool visible_{true};
     bool enabled_{true};
     Cursor cursor_{Cursor::inherit};
+    bool roleDeclared_{false};
     std::vector<std::unique_ptr<Component>> children_;
 };
 
@@ -229,6 +249,8 @@ class Session
     bool hasFileDialog() const;
     // Toasts + message boxes; null if the host has no notification surface.
     neui_notify_api_t *notify() const { return notify_; }
+    // Null unless the host exposes NEUI_API_A11Y.
+    neui_a11y_api_t *a11y() const { return a11y_; }
 
     // The user zoom. Design units are multiplied by this on the way out to
     // neui and divided on the way in. When neui's own NEUI_ATTR_UI_SCALE
@@ -255,6 +277,7 @@ class Session
     neui_attr_api_t *attrs_{nullptr};
     neui_pointer_api_t *pointer_{nullptr};
     neui_notify_api_t *notify_{nullptr};
+    neui_a11y_api_t *a11y_{nullptr};
     float zoom_{1.0f};
     std::vector<detail::Bindings> table_;
 
