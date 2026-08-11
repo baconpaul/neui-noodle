@@ -13,9 +13,9 @@
  *
  * The one shape worth knowing before reading anything else:
  *
- *   struct Knob : neuiplusplus::Component,
- *                 neuiplusplus::Paintable,
- *                 neuiplusplus::MouseHandling
+ *   struct Knob : neuiplusplus::Component<Knob,
+ *                                        neuiplusplus::Paints,
+ *                                        neuiplusplus::MouseEvents>
  *   {
  *       Knob(neuiplusplus::Parent p, Model &m) : Component(p), model(m) {}
  *
@@ -46,12 +46,12 @@
 
 #include "a11y.h"
 #include "canvas.h"
+#include "capabilities.h"
 #include "color.h"
 #include "component.h"
 #include "cursor.h"
 #include "events.h"
 #include "geometry.h"
-#include "interfaces.h"
 
 namespace neuipp = neuiplusplus;
 

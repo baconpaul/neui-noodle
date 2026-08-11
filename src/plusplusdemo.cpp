@@ -65,8 +65,8 @@ struct Value
 // ---------------------------------------------------------------------------
 // Knob - drag vertically. Paintable + MouseHandling, nothing else.
 
-struct Knob : npp::Component, npp::Paintable, npp::MouseHandling, npp::KeyboardHandling,
-              npp::FocusHandling
+struct Knob : npp::Component<Knob, npp::Paints, npp::MouseEvents, npp::KeyboardEvents,
+                             npp::FocusEvents>
 {
     Knob(npp::Parent p, Value &value) : Component(p), val(value)
     {
@@ -200,8 +200,8 @@ struct Knob : npp::Component, npp::Paintable, npp::MouseHandling, npp::KeyboardH
 // ---------------------------------------------------------------------------
 // Slider - drag horizontally, absolute position.
 
-struct Slider : npp::Component, npp::Paintable, npp::MouseHandling, npp::KeyboardHandling,
-                npp::FocusHandling
+struct Slider : npp::Component<Slider, npp::Paints, npp::MouseEvents, npp::KeyboardEvents,
+                               npp::FocusEvents>
 {
     // Deliberately NOT a relative-pointer drag: this maps position to value
     // absolutely, so it wants the pointer bounded. Relative mode is for
@@ -315,7 +315,7 @@ struct Slider : npp::Component, npp::Paintable, npp::MouseHandling, npp::Keyboar
 // Button - a text button with an onClick. Paintable + MouseHandling; the
 // pressed/hover state is entirely local.
 
-struct Button : npp::Component, npp::Paintable, npp::MouseHandling
+struct Button : npp::Component<Button, npp::Paints, npp::MouseEvents>
 {
     Button(npp::Parent p, std::string caption) : Component(p), text(std::move(caption))
     {
@@ -367,7 +367,7 @@ struct Button : npp::Component, npp::Paintable, npp::MouseHandling
 // Readout - Paintable only. No input interfaces, so neuiplusplus leaves
 // emit_events off and it is never hit-tested.
 
-struct Readout : npp::Component, npp::Paintable
+struct Readout : npp::Component<Readout, npp::Paints>
 {
     Readout(npp::Parent p, Value &a, Value &b) : Component(p), knob(a), slider(b)
     {
@@ -403,7 +403,7 @@ struct Readout : npp::Component, npp::Paintable
 // ---------------------------------------------------------------------------
 // FileInfo - one line about whatever the picker last returned.
 
-struct FileInfo : npp::Component, npp::Paintable
+struct FileInfo : npp::Component<FileInfo, npp::Paints>
 {
     explicit FileInfo(npp::Parent p) : Component(p)
     {
@@ -446,7 +446,7 @@ struct FileInfo : npp::Component, npp::Paintable
 // The panel owns the controls and lays them out. Resizable, so neui's RESIZE
 // lands here; Paintable for the background.
 
-struct Panel : npp::Component, npp::Paintable, npp::Resizable
+struct Panel : npp::Component<Panel, npp::Paints, npp::Resizes>
 {
     Panel(npp::Parent p, Value &kv, Value &sv)
         : Component(p), knob(add<Knob>(kv)), slider(add<Slider>(sv)),

@@ -156,7 +156,7 @@ neui_file_dialog_t buildDesc(const FileDialogOptions &opts,
 
 bool Session::hasFileDialog() const { return notify_ != nullptr && notify_->open_file != nullptr; }
 
-FileDialogResult Session::openFile(Component &ownerFrame, const FileDialogOptions &opts)
+FileDialogResult Session::openFile(ComponentCore &ownerFrame, const FileDialogOptions &opts)
 {
     FileDialogResult r;
     if (!hasFileDialog())
@@ -171,7 +171,7 @@ FileDialogResult Session::openFile(Component &ownerFrame, const FileDialogOption
     return r;
 }
 
-FileDialogResult Session::saveFile(Component &ownerFrame, const FileDialogOptions &opts)
+FileDialogResult Session::saveFile(ComponentCore &ownerFrame, const FileDialogOptions &opts)
 {
     FileDialogResult r;
     if (notify_ == nullptr || notify_->save_file == nullptr)
@@ -201,22 +201,22 @@ bool NEUI_ABI Session::dispatch(void *token, neui_event_t *event)
     {
         auto &pe = event->data.paint;
         auto *b = s->lookup(pe.widget);
-        if (!b || !b->paintable)
+        if (!b || !b->paint)
             return false;
         // Scale once here; every component then paints in design units. The
         // framework's own push_transform/pop_transform bracket cleans this up.
         pe.painter_api->scale(pe.p, z, z);
         Canvas g{pe.painter_api, pe.p, Rect::fromSize(pe.width / z, pe.height / z), pe.focused};
-        b->paintable->paint(g);
+        b->paint(b->obj, g);
         return true;
     }
 
     if (event->type == NEUI_EVENT_RESIZE)
     {
         auto *b = s->lookup(event->data.resize.widget);
-        if (!b || !b->resizable)
+        if (!b || !b->resized)
             return false;
-        b->resizable->resized();
+        b->resized(b->obj);
         return true;
     }
 
@@ -225,10 +225,7 @@ bool NEUI_ABI Session::dispatch(void *token, neui_event_t *event)
         auto *b = s->lookup(event->data.focus.widget);
         if (!b || !b->focus)
             return false;
-        if (event->data.focus.focused)
-            b->focus->focusGained();
-        else
-            b->focus->focusLost();
+        b->focus(b->obj, event->data.focus.focused);
         return true;
     }
 
@@ -236,14 +233,14 @@ bool NEUI_ABI Session::dispatch(void *token, neui_event_t *event)
     {
         auto &we = event->data.wheel;
         auto *b = s->lookup(we.widget);
-        if (!b || !b->mouse)
+        if (!b || !b->wheel)
             return false;
         WheelEvent w;
         w.position = {we.x / z, we.y / z};
         w.delta = float(we.delta);
         w.isHorizontal = we.is_horizontal != 0;
         w.mods = modsFrom(we.buttonmap);
-        b->mouse->mouseWheel(w);
+        b->wheel(b->obj, w);
         return true;
     }
 
@@ -277,10 +274,10 @@ bool NEUI_ABI Session::dispatch(void *token, neui_event_t *event)
     switch (event->type)
     {
     case NEUI_EVENT_MOUSE_ENTER:
-        b->mouse->mouseEnter(e);
+        b->mouse(b->obj, e, MouseKind::enter);
         break;
     case NEUI_EVENT_MOUSE_LEAVE:
-        b->mouse->mouseExit(e);
+        b->mouse(b->obj, e, MouseKind::exit);
         break;
     case NEUI_EVENT_MOUSE_BUTTON_DOWN:
         s->pressed_ = me.widget;
@@ -288,28 +285,28 @@ bool NEUI_ABI Session::dispatch(void *token, neui_event_t *event)
         e.isDragging = true;
         e.downPosition = e.position;
         e.clickCount = 1;
-        b->mouse->mouseDown(e);
+        b->mouse(b->obj, e, MouseKind::down);
         break;
     case NEUI_EVENT_MOUSE_MOVE:
         // A held-button drag arrives as MOVE. The latch decides, not buttonmap.
         if (e.isDragging)
-            b->mouse->mouseDrag(e);
+            b->mouse(b->obj, e, MouseKind::drag);
         else
-            b->mouse->mouseMove(e);
+            b->mouse(b->obj, e, MouseKind::move);
         break;
     case NEUI_EVENT_MOUSE_BUTTON_UP:
-        b->mouse->mouseUp(e);
+        b->mouse(b->obj, e, MouseKind::up);
         s->pressed_ = widget_none;
         break;
     case NEUI_EVENT_MOUSE_BUTTON_DBLCLICK:
         e.clickCount = 2;
-        b->mouse->mouseDoubleClick(e);
+        b->mouse(b->obj, e, MouseKind::doubleClick);
         break;
     case NEUI_EVENT_MOUSE_RBUTTON_DOWN:
-        b->mouse->mouseRightButtonDown(e);
+        b->mouse(b->obj, e, MouseKind::rightDown);
         break;
     case NEUI_EVENT_MOUSE_RBUTTON_UP:
-        b->mouse->mouseRightButtonUp(e);
+        b->mouse(b->obj, e, MouseKind::rightUp);
         break;
     default:
         return false;
@@ -320,18 +317,18 @@ bool NEUI_ABI Session::dispatch(void *token, neui_event_t *event)
 // ---------------------------------------------------------------------------
 // Component
 
-Component::Component(Parent p) : session_(&p.of.session()), parent_(&p.of)
+ComponentCore::ComponentCore(Parent p) : session_(&p.of.session()), parent_(&p.of)
 {
     widget_ = session_->widgets()->create(session_->raw(), p.of.widget(), NEUI_W_CUSTOMDRAW, 0, 0,
                                           1, 1, nullptr);
 }
 
-Component::Component(Session &s, neui_widget_t w, Rect bounds, RootTag)
+ComponentCore::ComponentCore(Session &s, neui_widget_t w, Rect bounds, RootTag)
     : session_(&s), widget_(w), bounds_(bounds)
 {
 }
 
-Component::~Component()
+ComponentCore::~ComponentCore()
 {
     // Explicit: children_ is a base member, so without this it would outlive
     // the destroy() below and we would be tearing down parent-first.
@@ -344,7 +341,7 @@ Component::~Component()
     }
 }
 
-void Component::registerChild(Component &child, const detail::Bindings &b)
+void ComponentCore::registerChild(ComponentCore &child, const detail::Bindings &b)
 {
     session_->bind(child.widget(), b);
     // A component with no input interface is never hit-tested.
@@ -361,13 +358,13 @@ void Component::registerChild(Component &child, const detail::Bindings &b)
     child.applyBounds();
 }
 
-void Component::setBounds(Rect r)
+void ComponentCore::setBounds(Rect r)
 {
     bounds_ = r;
     applyBounds();
 }
 
-void Component::applyBounds()
+void ComponentCore::applyBounds()
 {
     if (!session_ || widget_.id == widget_none.id)
         return;
@@ -382,13 +379,13 @@ void Component::applyBounds()
                                  std::max(0, y1 - y0));
 }
 
-void Component::repaint() const
+void ComponentCore::repaintImpl() const
 {
     if (session_ && widget_.id != widget_none.id)
         session_->widgets()->invalidate(session_->raw(), widget_);
 }
 
-void Component::setVisible(bool v)
+void ComponentCore::setVisible(bool v)
 {
     visible_ = v;
     if (!session_)
@@ -399,77 +396,75 @@ void Component::setVisible(bool v)
         session_->widgets()->hide(session_->raw(), widget_);
 }
 
-void Component::setEnabled(bool e)
+void ComponentCore::setEnabled(bool e)
 {
     enabled_ = e;
     if (session_)
         session_->widgets()->set_enabled(session_->raw(), widget_, e);
 }
 
-void Component::takeFocus()
+void ComponentCore::takeFocusImpl()
 {
     if (session_)
         session_->widgets()->set_focus(session_->raw(), widget_);
 }
 
-void Component::setCursor(Cursor c)
+void ComponentCore::setCursorImpl(Cursor c)
 {
-    cursor_ = c;
     if (session_ && session_->attrs())
         session_->attrs()->set_string(session_->raw(), widget_, NEUI_ATTR_CURSOR, cursorName(c));
 }
 
-bool Component::beginRelativeDrag()
+bool ComponentCore::beginRelativeDragImpl()
 {
     if (!session_ || !session_->pointer())
         return false;
     return session_->pointer()->begin_relative(session_->raw(), widget_);
 }
 
-void Component::endRelativeDrag()
+void ComponentCore::endRelativeDragImpl()
 {
     if (session_ && session_->pointer())
         session_->pointer()->end_relative(session_->raw());
 }
 
-void Component::setAccessibleRole(Role r)
+void ComponentCore::setAccessibleRole(Role r)
 {
-    roleDeclared_ = true;
     if (session_ && session_->a11y())
         session_->a11y()->set_role(session_->raw(), widget_, neui_a11y_role_t(r));
 }
 
-void Component::setAccessibleName(const char *utf8)
+void ComponentCore::setAccessibleName(const char *utf8)
 {
     if (session_ && session_->a11y())
         session_->a11y()->set_name(session_->raw(), widget_, utf8);
 }
 
-void Component::setAccessibleDescription(const char *utf8)
+void ComponentCore::setAccessibleDescription(const char *utf8)
 {
     if (session_ && session_->a11y())
         session_->a11y()->set_description(session_->raw(), widget_, utf8);
 }
 
-void Component::setAccessibleValueRange(float min, float max, float step)
+void ComponentCore::setAccessibleValueRange(float min, float max, float step)
 {
     if (session_ && session_->a11y())
         session_->a11y()->set_value_range(session_->raw(), widget_, min, max, step);
 }
 
-void Component::setAccessibleValue(float normalized)
+void ComponentCore::setAccessibleValue(float normalized)
 {
     if (session_ && session_->a11y())
         session_->a11y()->set_value(session_->raw(), widget_, normalized);
 }
 
-void Component::setAccessibleValueText(const char *utf8)
+void ComponentCore::setAccessibleValueText(const char *utf8)
 {
     if (session_ && session_->a11y())
         session_->a11y()->set_value_text(session_->raw(), widget_, utf8);
 }
 
-void Component::notifyAccessible(A11yChange c)
+void ComponentCore::notifyAccessible(A11yChange c)
 {
     if (session_ && session_->a11y())
         session_->a11y()->notify(session_->raw(), widget_, neui_a11y_change_t(c));
@@ -484,7 +479,7 @@ Frame::Frame(Session &s, const char *widgetType, Rect bounds, const char *title)
                                     int(std::lround(bounds.getY())),
                                     int(std::lround(bounds.getWidth())),
                                     int(std::lround(bounds.getHeight())), nullptr),
-                bounds, Component::RootTag{})
+                bounds, ComponentCore::RootTag{})
 {
     if (title)
         s.widgets()->set_text(s.raw(), widget(), title);

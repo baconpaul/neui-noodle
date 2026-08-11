@@ -53,6 +53,29 @@ class Modifiers
     std::uint32_t bits_{0};
 };
 
+// Which mouse event this is. The dispatcher passes it to the generated thunk,
+// which fans out to the matching MouseEvents<D> virtual - so the kind never
+// reaches component code.
+enum class MouseKind
+{
+    enter,
+    exit,
+    move,
+    down,
+    drag,
+    up,
+    doubleClick,
+    rightDown,
+    rightUp
+};
+
+enum class KeyKind
+{
+    pressed,
+    typed,
+    released
+};
+
 struct MouseEvent
 {
     Point position{};       // component-local, design units
