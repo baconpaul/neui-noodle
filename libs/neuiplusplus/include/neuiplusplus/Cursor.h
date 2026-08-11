@@ -1,29 +1,40 @@
 /*
  * neuiplusplus - a C++20 skin over the neui C API
- *
- * Pointer shapes, mapped onto neui's NEUI_ATTR_CURSOR string attribute.
- *
- * Two things about that attribute worth knowing at this layer:
- *   - It is resolved by the CROSSPLATFORM host only. The native win32 / macOS
- *     hosts do not read it, because their widgets are real OS controls that
- *     manage their own cursors.
- *   - It only takes effect on a widget that hit-tests, i.e. one with
- *     emit_events. In this library that means a component inheriting
- *     MouseHandling / KeyboardHandling / FocusHandling; setting a cursor on a
- *     decorative component is silently a no-op.
- *
- * `inherit` is the default and defers to the nearest ancestor that sets one,
- * falling back to the OS arrow; `arrow` explicitly stops inheriting. Not every
- * shape exists on every OS - neui falls back to the nearest neighbour rather
- * than to the arrow, and macOS cannot honour wait / progress at all.
+ * SPDX-License-Identifier: MIT
  */
 
 #ifndef NEUIPLUSPLUS_CURSOR_H
 #define NEUIPLUSPLUS_CURSOR_H
 
+/**
+ * @file
+ * @brief Pointer shapes, over neui's `NEUI_ATTR_CURSOR` string attribute.
+ *
+ * Two things about that attribute are worth knowing at this layer:
+ *
+ *  - It is resolved by the CROSSPLATFORM host only. The native win32 / macOS
+ *    hosts do not read it, because their widgets are real OS controls that
+ *    manage their own cursors.
+ *  - It only takes effect on a widget that hit-tests, i.e. one with
+ *    `emit_events`. Here that means a component naming at least one input
+ *    interface; setting a cursor on a decorative component is silently a no-op.
+ *    That is why interfaces::MouseEvents, not ComponentCore, owns setCursor.
+ *
+ * Not every shape exists on every OS - neui falls back to the nearest
+ * neighbour rather than to the arrow, and macOS cannot honour wait / progress
+ * at all.
+ */
+
 namespace neuiplusplus
 {
 
+/**
+ * @brief A pointer shape.
+ *
+ * @ref Cursor::inherit is the default and defers to the nearest ancestor that
+ * sets one, falling back to the OS arrow; @ref Cursor::arrow explicitly stops
+ * inheriting.
+ */
 enum class Cursor
 {
     inherit,
@@ -45,8 +56,10 @@ enum class Cursor
     hidden
 };
 
-// The canonical neui spelling. Canonical rather than an alias so a get_string
-// round-trip compares equal.
+/**
+ * @brief The canonical neui spelling of @p c.
+ * @note Canonical rather than an alias, so a `get_string` round-trip compares equal.
+ */
 inline const char *cursorName(Cursor c)
 {
     switch (c)

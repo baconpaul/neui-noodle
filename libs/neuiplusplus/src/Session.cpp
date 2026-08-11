@@ -1,16 +1,16 @@
 /*
- * neuiplusplus - implementation.
+ * neuiplusplus - a C++20 skin over the neui C API
+ * SPDX-License-Identifier: MIT
  *
- * The whole runtime is: a widget-id -> Bindings table, one trampoline that
- * fans neui's flat event union out to the capability interfaces, and the
- * design-unit <-> device-pixel conversion at the boundary.
+ * Session: the neui handles, the widget-id -> Bindings table, the one
+ * trampoline that fans neui's flat event union out to the capability
+ * interfaces, and the design-unit <-> device-pixel conversion at the boundary.
  */
 
-#include <neuiplusplus/component.h>
+#include <neuiplusplus/Component.h>
+#include <neuiplusplus/Session.h>
 
 #include <algorithm>
-#include <cmath>
-#include <cstdio>
 #include <cstring>
 
 namespace neuiplusplus
@@ -22,11 +22,29 @@ namespace
 // the low 16, so the slot is a direct index into the binding table.
 inline std::size_t slotOf(neui_widget_t w) { return std::size_t(w.id & 0xFFFFu); }
 
+// A mouse buttonmap is already in Modifiers' bit space (it mirrors NEUI_MK_*).
 inline Modifiers modsFrom(std::uint32_t buttonmap) { return Modifiers{buttonmap}; }
+
+// A KEY event is not: neui carries key modifiers in the unrelated NEUI_KMOD_*
+// space (SHIFT 0x1 / CTRL 0x2 / ALT 0x4 / META 0x8), which overlaps the button
+// bits. Translate rather than reinterpret.
+inline Modifiers modsFromKeyMods(std::uint32_t kmod)
+{
+    std::uint32_t m = 0;
+    if (kmod & NEUI_KMOD_SHIFT)
+        m |= Modifiers::kShift;
+    if (kmod & NEUI_KMOD_CTRL)
+        m |= Modifiers::kCtrl;
+    if (kmod & NEUI_KMOD_ALT)
+        m |= Modifiers::kAlt;
+    if (kmod & NEUI_KMOD_META)
+        m |= Modifiers::kMeta;
+    return Modifiers{m};
+}
 } // namespace
 
 // ---------------------------------------------------------------------------
-// Session
+// Lifetime
 
 std::unique_ptr<Session> Session::create(neui_api_t *host)
 {
@@ -44,14 +62,13 @@ std::unique_ptr<Session> Session::create(neui_api_t *host)
     if (!s->sess_.session)
         return nullptr;
 
-    s->widgets_ =
-        static_cast<neui_widget_api_t *>(host->get_interface(s->sess_, NEUI_API_WIDGETS));
+    s->widgets_ = static_cast<neui_widget_api_t *>(host->get_interface(s->sess_, NEUI_API_WIDGETS));
     if (!s->widgets_)
         return nullptr;
 
-    // Both optional, and both crossplatform-host-only in practice. Feature
-    // detect rather than assume: on Windows and macOS neui_get_api(NULL)
-    // returns the native host, which exposes neither.
+    // All optional, and all crossplatform-host-only in practice. Feature detect
+    // rather than assume: on Windows and macOS neui_get_api(NULL) returns the
+    // native host, which exposes none of them.
     s->attrs_ = static_cast<neui_attr_api_t *>(host->get_interface(s->sess_, NEUI_API_ATTRS));
     s->pointer_ =
         static_cast<neui_pointer_api_t *>(host->get_interface(s->sess_, NEUI_API_POINTER));
@@ -76,6 +93,9 @@ void *NEUI_ABI Session::clientInterface(void *token, const char *iface)
     return nullptr;
 }
 
+// ---------------------------------------------------------------------------
+// Dispatch table
+
 void Session::bind(neui_widget_t w, const detail::Bindings &b)
 {
     const std::size_t slot = slotOf(w);
@@ -99,8 +119,8 @@ detail::Bindings *Session::lookup(neui_widget_t w)
     if (slot >= table_.size())
         return nullptr;
     auto &b = table_[slot];
-    // Guard against a stale id after slot reuse: the binding must name the
-    // same widget we were handed.
+    // Guard against a stale id after slot reuse: the binding must name the same
+    // widget we were handed.
     return (b.self && b.self->widget().id == w.id) ? &b : nullptr;
 }
 
@@ -112,6 +132,9 @@ void Session::setZoom(float z)
             b.self->setBounds(b.self->bounds()); // re-applies with the new scale
 }
 
+// ---------------------------------------------------------------------------
+// File dialogs
+
 namespace
 {
 // The C API hands each path to a callback and owns the buffer only for the
@@ -122,8 +145,8 @@ void NEUI_ABI collectPath(void *userdata, const char *path)
         static_cast<std::vector<std::string> *>(userdata)->emplace_back(path);
 }
 
-// Builds the C description. The neui_file_filter_t array points into `opts`,
-// so the returned vector must not outlive the call that uses it.
+// Builds the C description. The neui_file_filter_t array points into `opts`, so
+// the returned vector must not outlive the call that uses it.
 std::vector<neui_file_filter_t> buildFilters(const FileDialogOptions &opts)
 {
     std::vector<neui_file_filter_t> out;
@@ -186,8 +209,18 @@ FileDialogResult Session::saveFile(ComponentCore &ownerFrame, const FileDialogOp
     return r;
 }
 
+// ---------------------------------------------------------------------------
+// The trampoline
+//
+// Every neui event for every widget in this session arrives here. It finds the
+// binding, converts the payload out of device pixels, and calls the one thunk
+// that knows the concrete type.
+
 bool NEUI_ABI Session::dispatch(void *token, neui_event_t *event)
 {
+    using detail::KeyKind;
+    using detail::MouseKind;
+
     auto *s = static_cast<Session *>(token);
     if (!s || !event)
         return false;
@@ -231,6 +264,8 @@ bool NEUI_ABI Session::dispatch(void *token, neui_event_t *event)
 
     if (event->type == NEUI_EVENT_MOUSE_WHEEL)
     {
+        // data.wheel, never data.mouse: the payloads overlap in the union and
+        // mouse.buttonmap sits at the same offset as wheel.delta.
         auto &we = event->data.wheel;
         auto *b = s->lookup(we.widget);
         if (!b || !b->wheel)
@@ -243,6 +278,37 @@ bool NEUI_ABI Session::dispatch(void *token, neui_event_t *event)
         w.mods = modsFrom(we.buttonmap);
         b->wheel(b->obj, w);
         return true;
+    }
+
+    // ---- keys --------------------------------------------------------------
+    // The client gets first refusal on every key routed to the focused widget;
+    // returning false here hands it back to neui's own handling, which is what
+    // KeyboardEvents::keyPressed's bool return means.
+    switch (event->type)
+    {
+    case NEUI_EVENT_KEYDOWN:
+    case NEUI_EVENT_KEYCHAR:
+    case NEUI_EVENT_KEYUP:
+    {
+        auto &ke = event->data.key;
+        auto *kb = s->lookup(ke.widget);
+        if (!kb || !kb->key)
+            return false;
+        KeyEvent k;
+        k.mods = modsFromKeyMods(ke.modifiers);
+        if (event->type == NEUI_EVENT_KEYCHAR)
+        {
+            // On KEYCHAR the keycode field carries a Unicode CODEPOINT, not a
+            // NEUI_KEY_*; the two never share an event.
+            k.character = ke.keycode;
+            return kb->key(kb->obj, k, KeyKind::typed);
+        }
+        k.keyCode = ke.keycode;
+        return kb->key(kb->obj, k,
+                       event->type == NEUI_EVENT_KEYDOWN ? KeyKind::pressed : KeyKind::released);
+    }
+    default:
+        break;
     }
 
     // ---- mouse -------------------------------------------------------------
@@ -312,188 +378,8 @@ bool NEUI_ABI Session::dispatch(void *token, neui_event_t *event)
     default:
         return false;
     }
+
     return true;
-}
-
-// ---------------------------------------------------------------------------
-// Component
-
-ComponentCore::ComponentCore(Parent p) : session_(&p.of.session()), parent_(&p.of)
-{
-    widget_ = session_->widgets()->create(session_->raw(), p.of.widget(), NEUI_W_CUSTOMDRAW, 0, 0,
-                                          1, 1, nullptr);
-}
-
-ComponentCore::ComponentCore(Session &s, neui_widget_t w, Rect bounds, RootTag)
-    : session_(&s), widget_(w), bounds_(bounds)
-{
-}
-
-ComponentCore::~ComponentCore()
-{
-    // Explicit: children_ is a base member, so without this it would outlive
-    // the destroy() below and we would be tearing down parent-first.
-    children_.clear();
-
-    if (session_ && widget_.id != widget_none.id)
-    {
-        session_->unbind(widget_);
-        session_->widgets()->destroy(session_->raw(), widget_);
-    }
-}
-
-void ComponentCore::registerChild(ComponentCore &child, const detail::Bindings &b)
-{
-    session_->bind(child.widget(), b);
-    // A component with no input interface is never hit-tested.
-    session_->widgets()->set_emit_events(session_->raw(), child.widget(), b.wantsInput());
-    if (b.focus)
-        session_->widgets()->set_tab_stop(session_->raw(), child.widget(), true);
-
-    // NO automatic role. An earlier version defaulted non-interactive
-    // components to Role::none as a "decorative" convenience, which was wrong:
-    // ROLE_NONE removes the node AND ITS WHOLE SUBTREE, so a plain container
-    // panel took every control in the editor out of the tree with it. Roles are
-    // declared explicitly, per widget, by the widget that knows what it is; a
-    // container left alone reports ROLE_GROUP, which is exactly right for it.
-    child.applyBounds();
-}
-
-void ComponentCore::setBounds(Rect r)
-{
-    bounds_ = r;
-    applyBounds();
-}
-
-void ComponentCore::applyBounds()
-{
-    if (!session_ || widget_.id == widget_none.id)
-        return;
-    const float z = session_->zoom();
-    // Snap EDGES, not position-and-size independently, so neighbours share a
-    // pixel boundary at fractional zoom instead of gapping or overlapping.
-    const int x0 = int(std::lround(bounds_.getX() * z));
-    const int y0 = int(std::lround(bounds_.getY() * z));
-    const int x1 = int(std::lround(bounds_.getRight() * z));
-    const int y1 = int(std::lround(bounds_.getBottom() * z));
-    session_->widgets()->set_pos(session_->raw(), widget_, x0, y0, std::max(0, x1 - x0),
-                                 std::max(0, y1 - y0));
-}
-
-void ComponentCore::repaintImpl() const
-{
-    if (session_ && widget_.id != widget_none.id)
-        session_->widgets()->invalidate(session_->raw(), widget_);
-}
-
-void ComponentCore::setVisible(bool v)
-{
-    visible_ = v;
-    if (!session_)
-        return;
-    if (v)
-        session_->widgets()->show(session_->raw(), widget_);
-    else
-        session_->widgets()->hide(session_->raw(), widget_);
-}
-
-void ComponentCore::setEnabled(bool e)
-{
-    enabled_ = e;
-    if (session_)
-        session_->widgets()->set_enabled(session_->raw(), widget_, e);
-}
-
-void ComponentCore::takeFocusImpl()
-{
-    if (session_)
-        session_->widgets()->set_focus(session_->raw(), widget_);
-}
-
-void ComponentCore::setCursorImpl(Cursor c)
-{
-    if (session_ && session_->attrs())
-        session_->attrs()->set_string(session_->raw(), widget_, NEUI_ATTR_CURSOR, cursorName(c));
-}
-
-bool ComponentCore::beginRelativeDragImpl()
-{
-    if (!session_ || !session_->pointer())
-        return false;
-    return session_->pointer()->begin_relative(session_->raw(), widget_);
-}
-
-void ComponentCore::endRelativeDragImpl()
-{
-    if (session_ && session_->pointer())
-        session_->pointer()->end_relative(session_->raw());
-}
-
-void ComponentCore::setAccessibleRole(Role r)
-{
-    if (session_ && session_->a11y())
-        session_->a11y()->set_role(session_->raw(), widget_, neui_a11y_role_t(r));
-}
-
-void ComponentCore::setAccessibleName(const char *utf8)
-{
-    if (session_ && session_->a11y())
-        session_->a11y()->set_name(session_->raw(), widget_, utf8);
-}
-
-void ComponentCore::setAccessibleDescription(const char *utf8)
-{
-    if (session_ && session_->a11y())
-        session_->a11y()->set_description(session_->raw(), widget_, utf8);
-}
-
-void ComponentCore::setAccessibleValueRange(float min, float max, float step)
-{
-    if (session_ && session_->a11y())
-        session_->a11y()->set_value_range(session_->raw(), widget_, min, max, step);
-}
-
-void ComponentCore::setAccessibleValue(float normalized)
-{
-    if (session_ && session_->a11y())
-        session_->a11y()->set_value(session_->raw(), widget_, normalized);
-}
-
-void ComponentCore::setAccessibleValueText(const char *utf8)
-{
-    if (session_ && session_->a11y())
-        session_->a11y()->set_value_text(session_->raw(), widget_, utf8);
-}
-
-void ComponentCore::notifyAccessible(A11yChange c)
-{
-    if (session_ && session_->a11y())
-        session_->a11y()->notify(session_->raw(), widget_, neui_a11y_change_t(c));
-}
-
-// ---------------------------------------------------------------------------
-// Frame
-
-Frame::Frame(Session &s, const char *widgetType, Rect bounds, const char *title)
-    : Component(s,
-                s.widgets()->create(s.raw(), widget_none, widgetType, int(std::lround(bounds.getX())),
-                                    int(std::lround(bounds.getY())),
-                                    int(std::lround(bounds.getWidth())),
-                                    int(std::lround(bounds.getHeight())), nullptr),
-                bounds, ComponentCore::RootTag{})
-{
-    if (title)
-        s.widgets()->set_text(s.raw(), widget(), title);
-}
-
-void Frame::show() { session().widgets()->show(session().raw(), widget()); }
-
-Rect Frame::clientBounds() const
-{
-    int x = 0, y = 0, w = 0, h = 0;
-    session().widgets()->get_client_rect(session().raw(), widget(), &x, &y, &w, &h);
-    const float z = session().zoom();
-    return {x / z, y / z, w / z, h / z};
 }
 
 } // namespace neuiplusplus

@@ -100,20 +100,13 @@ if(APPLE)
   target_link_options(neui-noodle PRIVATE "-Wl,-no_warn_duplicate_libraries")
 endif()
 
-# neuiplusplus - the C++20 layer over neui's C API, plus a demo exercising it.
-# Header-only apart from one implementation TU (the dispatch trampoline and the
-# design-unit boundary).
-add_library(neuiplusplus STATIC src/neuiplusplus.cpp)
-target_include_directories(neuiplusplus PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_compile_features(neuiplusplus PUBLIC cxx_std_20)
-target_link_libraries(neuiplusplus PUBLIC neui neui-xplhost)
-if(APPLE)
-  target_link_libraries(neuiplusplus PUBLIC neui-macoshost)
-endif()
-if(WIN32)
-  target_link_libraries(neuiplusplus PUBLIC neui-win32host)
-endif()
+# neuiplusplus - the C++20 layer over neui's C API. Its own library with its own
+# CMakeLists (libs/neuiplusplus), consumed here the way any other project would
+# consume it; it hard-errors if the neui targets are not already defined, which
+# is why it comes after add_subdirectory(libs/neui) above.
+add_subdirectory(libs/neuiplusplus)
 
+# ...and a demo exercising it.
 add_executable(plusplusdemo WIN32 MACOSX_BUNDLE src/plusplusdemo.cpp ${NOODLE_WIN_SOURCES})
 target_link_libraries(plusplusdemo PRIVATE neuiplusplus)
 
@@ -133,17 +126,15 @@ if(APPLE)
     MACOSX_BUNDLE_BUNDLE_NAME neui-noodle)
 endif()
 
-foreach(t neuiplusplus plusplusdemo)
-  if(MSVC)
-    target_compile_options(${t} PRIVATE /W4 /utf-8)
-  else()
-    # -Wsuggest-override closes the one hole in the capability-interface design:
-    # an override written without the keyword.
-    target_compile_options(${t} PRIVATE -Wall -Wextra -Wsuggest-override)
-  endif()
-endforeach()
-if(APPLE)
-  target_link_options(plusplusdemo PRIVATE "-Wl,-no_warn_duplicate_libraries")
+if(MSVC)
+  target_compile_options(plusplusdemo PRIVATE /W4 /utf-8 /w14263)
+else()
+  # -Wsuggest-override closes the one hole in the capability-interface design:
+  # an override written without the keyword. The library builds itself with it;
+  # component code has to opt in for itself, which is what this line is.
+  target_compile_options(plusplusdemo PRIVATE -Wall -Wextra -Wsuggest-override)
+  # -Wl,-no_warn_duplicate_libraries comes through neuiplusplus as an INTERFACE
+  # link option, so there is nothing to add here.
 endif()
 if(MSVC)
   target_link_options(plusplusdemo PRIVATE "/MANIFEST:NO")

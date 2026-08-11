@@ -1,10 +1,14 @@
 /*
- * plusplusdemo - a standalone app exercising the neuiplusplus layer.
+ * plusplusdemo - a standalone app exercising the neuiplusplus library.
  *
- * A deliberately crappy knob and slider, and a readout underneath showing both
- * normalised values. The point is not the controls - it is what the component
- * code looks like: no session handles, no painter handle threading, no event
- * union, no zoom arithmetic, and capability opt-in by inheritance.
+ * A deliberately crappy knob and slider, a readout underneath showing both
+ * normalised values, and a file picker. The point is not the controls - it is
+ * what the component code looks like: no session handles, no painter handle
+ * threading, no event union, no zoom arithmetic, and capability opt-in by
+ * inheritance.
+ *
+ * Everything below libs/neuiplusplus is consumed here exactly as an outside
+ * project would consume it - one include, one CMake target.
  */
 
 #include <neuiplusplus/neuiplusplus.h>
@@ -63,7 +67,7 @@ struct Value
 };
 
 // ---------------------------------------------------------------------------
-// Knob - drag vertically. Paintable + MouseHandling, nothing else.
+// Knob - drag vertically. Paints + MouseEvents + keys + focus.
 
 struct Knob : npp::Component<Knob, npp::Paints, npp::MouseEvents, npp::KeyboardEvents,
                              npp::FocusEvents>
@@ -73,7 +77,7 @@ struct Knob : npp::Component<Knob, npp::Paints, npp::MouseEvents, npp::KeyboardE
         setCursor(npp::Cursor::openHand); // "grab me"
         // Declaring slider makes the AT offer increment / decrement, which
         // arrive as LEFT / RIGHT on a hand-painted widget - hence
-        // KeyboardHandling above. Declare the real-world range too, so the AT
+        // KeyboardEvents above. Declare the real-world range too, so the AT
         // announces something meaningful rather than "0.62".
         setAccessibleRole(npp::Role::slider);
         setAccessibleName(val.label.c_str());
@@ -114,10 +118,12 @@ struct Knob : npp::Component<Knob, npp::Paints, npp::MouseEvents, npp::KeyboardE
         g.arcTo(c, r, a0, a0 + sweep);
         g.strokePath(4.0f, dragging ? pal.hot : pal.accent);
 
-        // Pointer.
-        const float a = a0 + sweep;
-        g.drawLine(npp::Point{c.x + std::cos(a) * r * 0.35f, c.y + std::sin(a) * r * 0.35f},
-                   npp::Point{c.x + std::cos(a) * r, c.y + std::sin(a) * r}, 2.0f, pal.ink);
+        // Pointer, as the radius at 3 o'clock swung round to the value angle.
+        // Transform is a plain value type - it never reaches the painter - but
+        // it says what is happening rather than making the reader recognise a
+        // pair of cos/sin calls.
+        const auto swing = npp::Transform::rotationAbout(c, a0 + sweep);
+        g.drawLine(swing.apply({c.x + r * 0.35f, c.y}), swing.apply({c.x + r, c.y}), 2.0f, pal.ink);
 
         g.drawText(val.label, b.withTrimmedTop(dia), 12.0f, pal.inkDim, npp::HAlign::centre,
                    npp::VAlign::middle);
@@ -137,6 +143,7 @@ struct Knob : npp::Component<Knob, npp::Paints, npp::MouseEvents, npp::KeyboardE
     {
         dragging = true;
         anchorY = e.position.y;
+        takeFocus();
         // Relative pointer for the drag: the cursor pins and hides, motion
         // keeps coming past the screen edge, and on release the pointer is put
         // back where it was grabbed. It handles the hide itself, so there is no
@@ -161,8 +168,8 @@ struct Knob : npp::Component<Knob, npp::Paints, npp::MouseEvents, npp::KeyboardE
     void mouseDoubleClick(const npp::MouseEvent &) override { val.set(0.5f); }
     void mouseWheel(const npp::WheelEvent &e) override
     {
-        // valueDelta, not physicalDelta: it carries the up-decreases convention
-        // that neui's own KNOB and SLIDER follow.
+        // valueDelta, not physicalDelta: it is the one place the wheel-to-value
+        // convention lives, and it already undoes the OS inversion for us.
         val.nudge(e.valueDelta() * 0.02f);
     }
 
@@ -260,7 +267,6 @@ struct Slider : npp::Component<Slider, npp::Paints, npp::MouseEvents, npp::Keybo
     {
         const auto b = g.bounds();
         const auto track = npp::Rect{0.0f, b.getCentreY() - 3.0f, b.getWidth(), 6.0f}
-                               .withTrimmedTop(0.0f)
                                .withTrimmedLeft(handleW * 0.5f)
                                .withTrimmedRight(handleW * 0.5f);
 
@@ -290,6 +296,7 @@ struct Slider : npp::Component<Slider, npp::Paints, npp::MouseEvents, npp::Keybo
     void mouseDown(const npp::MouseEvent &e) override
     {
         dragging = true;
+        takeFocus();
         setFromX(e.position.x);
     }
     void mouseDrag(const npp::MouseEvent &e) override { setFromX(e.position.x); }
@@ -299,10 +306,7 @@ struct Slider : npp::Component<Slider, npp::Paints, npp::MouseEvents, npp::Keybo
         repaint();
     }
 
-    void mouseWheel(const npp::WheelEvent &e) override
-    {
-        val.nudge(e.valueDelta() * 0.02f);
-    }
+    void mouseWheel(const npp::WheelEvent &e) override { val.nudge(e.valueDelta() * 0.02f); }
 
     void setFromX(float x)
     {
@@ -320,7 +324,7 @@ struct Slider : npp::Component<Slider, npp::Paints, npp::MouseEvents, npp::Keybo
 };
 
 // ---------------------------------------------------------------------------
-// Button - a text button with an onClick. Paintable + MouseHandling; the
+// Button - a text button with an onClick. Paints + MouseEvents; the
 // pressed/hover state is entirely local.
 
 struct Button : npp::Component<Button, npp::Paints, npp::MouseEvents>
@@ -372,7 +376,7 @@ struct Button : npp::Component<Button, npp::Paints, npp::MouseEvents>
 };
 
 // ---------------------------------------------------------------------------
-// Readout - Paintable only. No input interfaces, so neuiplusplus leaves
+// Readout - Paints only. No input interfaces, so neuiplusplus leaves
 // emit_events off and it is never hit-tested.
 
 struct Readout : npp::Component<Readout, npp::Paints>
@@ -408,59 +412,33 @@ struct Readout : npp::Component<Readout, npp::Paints>
     char line[128]{};
 };
 
-// ---------------------------------------------------------------------------
-// FileInfo - one line about whatever the picker last returned.
-
-struct FileInfo : npp::Component<FileInfo, npp::Paints>
+// One line about whatever the picker last returned. No component of its own -
+// npp::Label already declares static text, republishes its accessible name and
+// repaints on setText.
+std::string describeFile(const std::string &path, std::uintmax_t bytes)
 {
-    explicit FileInfo(npp::Parent p) : Component(p)
-    {
-        // Left alone it would report as an empty GROUP, which is a node an AT
-        // user has to navigate past for nothing. It carries text, so say so.
-        setAccessibleRole(npp::Role::staticText);
-        setAccessibleName(text.c_str());
-    }
-
-    void paint(npp::Canvas &g) override
-    {
-        g.drawText(text, g.bounds(), 12.0f, pal.inkDim, npp::HAlign::left, npp::VAlign::middle);
-    }
-
-    void show(const std::string &path, std::uintmax_t bytes)
-    {
-        const auto name = std::filesystem::path(path).filename().string();
-        char line[320];
-        std::snprintf(line, sizeof line, "%s  -  %.1f KB (%llu bytes)", name.c_str(),
-                      double(bytes) / 1024.0, static_cast<unsigned long long>(bytes));
-        text = line;
-        publish();
-    }
-    void showMessage(std::string m)
-    {
-        text = std::move(m);
-        publish();
-    }
-    void publish()
-    {
-        setAccessibleName(text.c_str());
-        notifyAccessible(npp::A11yChange::name);
-        repaint();
-    }
-
-    std::string text{"no file picked"};
-};
+    const auto name = std::filesystem::path(path).filename().string();
+    char line[320];
+    std::snprintf(line, sizeof line, "%s  -  %.1f KB (%llu bytes)", name.c_str(),
+                  double(bytes) / 1024.0, static_cast<unsigned long long>(bytes));
+    return line;
+}
 
 // ---------------------------------------------------------------------------
-// The panel owns the controls and lays them out. Resizable, so neui's RESIZE
-// lands here; Paintable for the background.
+// The panel owns the controls and lays them out. Resizes, so neui's RESIZE
+// lands here; Paints for the background.
 
 struct Panel : npp::Component<Panel, npp::Paints, npp::Resizes>
 {
     Panel(npp::Parent p, Value &kv, Value &sv)
-        : Component(p), knob(add<Knob>(kv)), slider(add<Slider>(sv)),
-          readout(add<Readout>(kv, sv)), pick(add<Button>("pick file")),
-          fileInfo(add<FileInfo>())
+        : Component(p), title(add<npp::Label>("neuiplusplus")), knob(add<Knob>(kv)),
+          slider(add<Slider>(sv)), readout(add<Readout>(kv, sv)), pick(add<Button>("pick file")),
+          fileInfo(add<npp::Label>("no file picked"))
     {
+        title.setFont({"", 15.0f, npp::FontWeight::semiBold});
+        title.setForeground(pal.ink);
+        fileInfo.setFont(npp::Font{12.0f});
+        fileInfo.setForeground(pal.inkDim);
     }
 
     void paint(npp::Canvas &g) override { g.fillAll(pal.window); }
@@ -468,6 +446,8 @@ struct Panel : npp::Component<Panel, npp::Paints, npp::Resizes>
     void resized() override
     {
         auto area = localBounds().reduced(16.0f);
+        title.setBounds(area.removeFromTop(20.0f));
+        area.removeFromTop(8.0f);
         fileInfo.setBounds(area.removeFromBottom(22.0f));
         area.removeFromBottom(8.0f);
         readout.setBounds(area.removeFromBottom(40.0f));
@@ -480,11 +460,12 @@ struct Panel : npp::Component<Panel, npp::Paints, npp::Resizes>
         slider.setBounds(area.withHeight(40.0f).translated(0.0f, area.getHeight() * 0.5f - 20.0f));
     }
 
+    npp::Label &title;
     Knob &knob;
     Slider &slider;
     Readout &readout;
     Button &pick;
-    FileInfo &fileInfo;
+    npp::Label &fileInfo;
 };
 
 } // namespace
@@ -513,8 +494,8 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // Both of these are crossplatform-host-only, and silently absent elsewhere -
-    // report them so "the cursor did nothing" is diagnosable at a glance.
+    // All crossplatform-host-only, and silently absent elsewhere - report them
+    // so "the cursor did nothing" is diagnosable at a glance.
     std::fprintf(stderr, "host=%s  cursor=%s  relative-pointer=%s  file-dialog=%s  a11y=%s\n",
                  xpl ? "crossplatform" : "native", session->attrs() ? "yes" : "no",
                  session->pointer() ? "yes" : "no", session->hasFileDialog() ? "yes" : "no",
@@ -524,7 +505,7 @@ int main(int argc, char *argv[])
     knobValue.label = "knob";
     sliderValue.label = "slider";
 
-    npp::Frame frame{*session, NEUI_W_APPWINDOW, npp::Rect{140, 140, 520, 260},
+    npp::Frame frame{*session, NEUI_W_APPWINDOW, npp::Rect{140, 140, 520, 290},
                      "neuiplusplus demo"};
 
     auto &panel = frame.add<Panel>(knobValue, sliderValue);
@@ -554,21 +535,21 @@ int main(int argc, char *argv[])
         const auto picked = session->openFile(frame, opts);
         if (!picked.supported)
         {
-            panel.fileInfo.showMessage("no file dialog on this host");
+            panel.fileInfo.setText("no file dialog on this host");
             return;
         }
         if (picked.cancelled())
         {
-            panel.fileInfo.showMessage("cancelled");
+            panel.fileInfo.setText("cancelled");
             return;
         }
 
         std::error_code ec;
         const auto bytes = std::filesystem::file_size(picked.first(), ec);
         if (ec)
-            panel.fileInfo.showMessage("could not stat: " + ec.message());
+            panel.fileInfo.setText("could not stat: " + ec.message());
         else
-            panel.fileInfo.show(picked.first(), bytes);
+            panel.fileInfo.setText(describeFile(picked.first(), bytes));
     };
 
     frame.show();
