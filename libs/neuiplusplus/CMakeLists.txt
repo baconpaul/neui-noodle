@@ -43,6 +43,23 @@ foreach(host neui-xplhost neui-macoshost neui-win32host)
   endif()
 endforeach()
 
+# neui's core and its hosts are a genuine link CYCLE, and only one direction of
+# it is declared: each host lib links the core, while the core's neui_init()
+# calls back out to every compiled-in host's neui_register_*host wrapper. With
+# just the host -> core edge visible, CMake emits the hosts first and a single
+# left-to-right linker pass (GNU ld) is already past them when it reads the
+# core's undefined references:
+#     undefined reference to `neui_register_xplhost'
+# Declaring the missing core -> host edge makes the cycle visible, and CMake
+# then repeats the members on the link line until they resolve. neui's own
+# examples sidestep this by naming `neui neui-xplhost` on every target; a
+# consumer of this library links only `neuiplusplus`, so it belongs here.
+foreach(host neui-xplhost neui-macoshost neui-win32host)
+  if(TARGET ${host})
+    target_link_libraries(neui INTERFACE ${host})
+  endif()
+endforeach()
+
 if(MSVC)
   # /W4 is the level neui itself builds at. /w14263 is the MSVC spelling of
   # -Wsuggest-override; see below for why it matters here.
