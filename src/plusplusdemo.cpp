@@ -12,9 +12,11 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <functional>
 #include <numbers>
 #include <string>
+#include <system_error>
 
 namespace npp = neuiplusplus;
 
@@ -65,13 +67,19 @@ struct Value
 
 struct Knob : npp::Component, npp::Paintable, npp::MouseHandling
 {
-    Knob(npp::Parent p, Value &value) : Component(p), val(value) {}
+    Knob(npp::Parent p, Value &value) : Component(p), val(value)
+    {
+        setCursor(npp::Cursor::openHand); // "grab me"
+    }
 
     void paint(npp::Canvas &g) override
     {
-        const auto b = g.bounds();
+        // Inset by a pixel: neui clips paint to the widget rect, and a stroke
+        // is centred on its path, so anything drawn flush to the edge loses its
+        // outer half-pixel. Applies to the ring outline and the value arc.
+        const auto b = g.bounds().reduced(1.0f);
         const float dia = std::min(b.getWidth(), b.getHeight() - 16.0f);
-        const npp::Rect face{(b.getWidth() - dia) * 0.5f, 0.0f, dia, dia};
+        const npp::Rect face{b.getX() + (b.getWidth() - dia) * 0.5f, b.getY(), dia, dia};
 
         g.fillEllipse(face, pal.panel);
         g.drawEllipse(face, 1.0f, hovered ? pal.hot : pal.edge);
@@ -108,6 +116,12 @@ struct Knob : npp::Component, npp::Paintable, npp::MouseHandling
     {
         dragging = true;
         anchorY = e.position.y;
+        // Relative pointer for the drag: the cursor pins and hides, motion
+        // keeps coming past the screen edge, and on release the pointer is put
+        // back where it was grabbed. It handles the hide itself, so there is no
+        // setCursor(hidden) here - the hover cursor set in the constructor
+        // stands throughout.
+        beginRelativeDrag();
         repaint();
     }
     void mouseDrag(const npp::MouseEvent &e) override
@@ -120,6 +134,7 @@ struct Knob : npp::Component, npp::Paintable, npp::MouseHandling
     void mouseUp(const npp::MouseEvent &) override
     {
         dragging = false;
+        endRelativeDrag();
         repaint();
     }
     void mouseDoubleClick(const npp::MouseEvent &) override { val.set(0.5f); }
@@ -136,7 +151,13 @@ struct Knob : npp::Component, npp::Paintable, npp::MouseHandling
 
 struct Slider : npp::Component, npp::Paintable, npp::MouseHandling
 {
-    Slider(npp::Parent p, Value &value) : Component(p), val(value) {}
+    // Deliberately NOT a relative-pointer drag: this maps position to value
+    // absolutely, so it wants the pointer bounded. Relative mode is for
+    // delta-driven controls like the knob.
+    Slider(npp::Parent p, Value &value) : Component(p), val(value)
+    {
+        setCursor(npp::Cursor::ewResize); // it drags horizontally
+    }
 
     void paint(npp::Canvas &g) override
     {
@@ -194,6 +215,58 @@ struct Slider : npp::Component, npp::Paintable, npp::MouseHandling
 };
 
 // ---------------------------------------------------------------------------
+// Button - a text button with an onClick. Paintable + MouseHandling; the
+// pressed/hover state is entirely local.
+
+struct Button : npp::Component, npp::Paintable, npp::MouseHandling
+{
+    Button(npp::Parent p, std::string caption) : Component(p), text(std::move(caption))
+    {
+        setCursor(npp::Cursor::hand);
+    }
+
+    void paint(npp::Canvas &g) override
+    {
+        const auto b = g.bounds().reduced(1.0f);
+        const auto fill = pressed ? pal.accent : (hovered ? pal.edge : pal.panel);
+        g.fillRoundRect(b, 3.0f, fill);
+        g.drawRoundRect(b, 3.0f, 1.0f, hovered ? pal.hot : pal.edge);
+        g.drawText(text, b, 13.0f, pressed ? pal.window : pal.ink, npp::HAlign::centre,
+                   npp::VAlign::middle);
+    }
+
+    void mouseEnter(const npp::MouseEvent &) override
+    {
+        hovered = true;
+        repaint();
+    }
+    void mouseExit(const npp::MouseEvent &) override
+    {
+        hovered = false;
+        repaint();
+    }
+    void mouseDown(const npp::MouseEvent &) override
+    {
+        pressed = true;
+        repaint();
+    }
+    void mouseUp(const npp::MouseEvent &e) override
+    {
+        const bool wasPressed = pressed;
+        pressed = false;
+        repaint();
+        // Only fire when released inside, the usual button contract.
+        if (wasPressed && localBounds().contains(e.position) && onClick)
+            onClick();
+    }
+
+    std::string text;
+    std::function<void()> onClick;
+    bool hovered{false};
+    bool pressed{false};
+};
+
+// ---------------------------------------------------------------------------
 // Readout - Paintable only. No input interfaces, so neuiplusplus leaves
 // emit_events off and it is never hit-tested.
 
@@ -218,6 +291,36 @@ struct Readout : npp::Component, npp::Paintable
 };
 
 // ---------------------------------------------------------------------------
+// FileInfo - one line about whatever the picker last returned.
+
+struct FileInfo : npp::Component, npp::Paintable
+{
+    explicit FileInfo(npp::Parent p) : Component(p) {}
+
+    void paint(npp::Canvas &g) override
+    {
+        g.drawText(text, g.bounds(), 12.0f, pal.inkDim, npp::HAlign::left, npp::VAlign::middle);
+    }
+
+    void show(const std::string &path, std::uintmax_t bytes)
+    {
+        const auto name = std::filesystem::path(path).filename().string();
+        char line[320];
+        std::snprintf(line, sizeof line, "%s  -  %.1f KB (%llu bytes)", name.c_str(),
+                      double(bytes) / 1024.0, static_cast<unsigned long long>(bytes));
+        text = line;
+        repaint();
+    }
+    void showMessage(std::string m)
+    {
+        text = std::move(m);
+        repaint();
+    }
+
+    std::string text{"no file picked"};
+};
+
+// ---------------------------------------------------------------------------
 // The panel owns the controls and lays them out. Resizable, so neui's RESIZE
 // lands here; Paintable for the background.
 
@@ -225,7 +328,8 @@ struct Panel : npp::Component, npp::Paintable, npp::Resizable
 {
     Panel(npp::Parent p, Value &kv, Value &sv)
         : Component(p), knob(add<Knob>(kv)), slider(add<Slider>(sv)),
-          readout(add<Readout>(kv, sv))
+          readout(add<Readout>(kv, sv)), pick(add<Button>("pick file")),
+          fileInfo(add<FileInfo>())
     {
     }
 
@@ -234,16 +338,23 @@ struct Panel : npp::Component, npp::Paintable, npp::Resizable
     void resized() override
     {
         auto area = localBounds().reduced(16.0f);
+        fileInfo.setBounds(area.removeFromBottom(22.0f));
+        area.removeFromBottom(8.0f);
         readout.setBounds(area.removeFromBottom(40.0f));
         area.removeFromBottom(16.0f);
         knob.setBounds(area.removeFromLeft(110.0f).withHeight(area.getHeight()));
         area.removeFromLeft(24.0f);
+        pick.setBounds(area.removeFromRight(90.0f).withHeight(26.0f).translated(
+            0.0f, area.getHeight() * 0.5f - 13.0f));
+        area.removeFromRight(16.0f);
         slider.setBounds(area.withHeight(40.0f).translated(0.0f, area.getHeight() * 0.5f - 20.0f));
     }
 
     Knob &knob;
     Slider &slider;
     Readout &readout;
+    Button &pick;
+    FileInfo &fileInfo;
 };
 
 } // namespace
@@ -272,6 +383,12 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    // Both of these are crossplatform-host-only, and silently absent elsewhere -
+    // report them so "the cursor did nothing" is diagnosable at a glance.
+    std::fprintf(stderr, "host=%s  cursor=%s  relative-pointer=%s  file-dialog=%s\n",
+                 xpl ? "crossplatform" : "native", session->attrs() ? "yes" : "no",
+                 session->pointer() ? "yes" : "no", session->hasFileDialog() ? "yes" : "no");
+
     Value knobValue, sliderValue;
     knobValue.label = "knob";
     sliderValue.label = "slider";
@@ -286,6 +403,32 @@ int main(int argc, char *argv[])
     // Both controls drive the same readout - the whole point of the callback.
     knobValue.onChange = [&panel] { panel.readout.repaint(); };
     sliderValue.onChange = [&panel] { panel.readout.repaint(); };
+
+    panel.pick.onClick = [&panel, &frame, &session] {
+        npp::FileDialogOptions opts;
+        opts.title = "Pick a wave file";
+        opts.filters = {{"Wave files", "*.wav"}, {"All files", "*"}};
+
+        // Modal: this blocks until the user confirms or cancels.
+        const auto picked = session->openFile(frame, opts);
+        if (!picked.supported)
+        {
+            panel.fileInfo.showMessage("no file dialog on this host");
+            return;
+        }
+        if (picked.cancelled())
+        {
+            panel.fileInfo.showMessage("cancelled");
+            return;
+        }
+
+        std::error_code ec;
+        const auto bytes = std::filesystem::file_size(picked.first(), ec);
+        if (ec)
+            panel.fileInfo.showMessage("could not stat: " + ec.message());
+        else
+            panel.fileInfo.show(picked.first(), bytes);
+    };
 
     frame.show();
     const bool ok = host->run(session->raw());

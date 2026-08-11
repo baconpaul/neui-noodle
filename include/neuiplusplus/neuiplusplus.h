@@ -47,6 +47,7 @@
 #include "canvas.h"
 #include "color.h"
 #include "component.h"
+#include "cursor.h"
 #include "events.h"
 #include "geometry.h"
 #include "interfaces.h"

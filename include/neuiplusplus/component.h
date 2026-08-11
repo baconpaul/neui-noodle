@@ -34,7 +34,9 @@
 #include <neui/neui.h>
 
 #include "canvas.h"
+#include "cursor.h"
 #include "events.h"
+#include "filedialog.h"
 #include "geometry.h"
 #include "interfaces.h"
 
@@ -132,6 +134,27 @@ class Component
     bool isEnabled() const { return enabled_; }
     void takeFocus();
 
+    // Pointer shape while hovering this component. No-op on a component that
+    // handles no input (it does not hit-test), and on the native hosts, which
+    // do not read the attribute at all - see cursor.h.
+    void setCursor(Cursor);
+    Cursor cursor() const { return cursor_; }
+
+    // Relative (unbounded) pointer for a value drag: the visible cursor pins
+    // and hides, motion keeps arriving past the screen edge, and on end the
+    // cursor is restored to where the press happened.
+    //
+    // CALL beginRelativeDrag FROM mouseDown, not from anywhere else - neui
+    // seeds the virtual position from the last dispatched mouse event, which
+    // inside a down handler is that very press. Returns false when the host has
+    // no pointer API (native hosts, iOS, null platform), so a caller degrades
+    // to an ordinary bounded drag. endRelativeDrag is safe unconditionally.
+    //
+    // Only for DELTA-driven drags. An absolute control that maps position to
+    // value wants the pointer bounded, and would just pin at its limits.
+    bool beginRelativeDrag();
+    void endRelativeDrag();
+
     // ---- children ----------------------------------------------------------
 
     template <class T, class... Args> T &add(Args &&...args)
@@ -166,6 +189,7 @@ class Component
     Rect bounds_{};
     bool visible_{true};
     bool enabled_{true};
+    Cursor cursor_{Cursor::inherit};
     std::vector<std::unique_ptr<Component>> children_;
 };
 
@@ -192,6 +216,19 @@ class Session
 
     neui_session_t raw() const { return sess_; }
     neui_widget_api_t *widgets() const { return widgets_; }
+    neui_attr_api_t *attrs() const { return attrs_; }
+    // Null unless the host exposes NEUI_API_POINTER (crossplatform host only).
+    neui_pointer_api_t *pointer() const { return pointer_; }
+
+    // Modal file dialogs. `ownerFrame` must be a Frame - neui anchors the
+    // dialog to a top-level window. Blocks until the user confirms or cancels.
+    // False `supported` means this host has no file-dialog surface at all,
+    // which is the only case where offering your own path entry makes sense.
+    FileDialogResult openFile(Component &ownerFrame, const FileDialogOptions &);
+    FileDialogResult saveFile(Component &ownerFrame, const FileDialogOptions &);
+    bool hasFileDialog() const;
+    // Toasts + message boxes; null if the host has no notification surface.
+    neui_notify_api_t *notify() const { return notify_; }
 
     // The user zoom. Design units are multiplied by this on the way out to
     // neui and divided on the way in. When neui's own NEUI_ATTR_UI_SCALE
@@ -215,6 +252,9 @@ class Session
     neui_api_t *host_{nullptr};
     neui_session_t sess_{};
     neui_widget_api_t *widgets_{nullptr};
+    neui_attr_api_t *attrs_{nullptr};
+    neui_pointer_api_t *pointer_{nullptr};
+    neui_notify_api_t *notify_{nullptr};
     float zoom_{1.0f};
     std::vector<detail::Bindings> table_;
 

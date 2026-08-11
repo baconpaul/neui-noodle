@@ -117,6 +117,22 @@ endif()
 add_executable(plusplusdemo WIN32 MACOSX_BUNDLE src/plusplusdemo.cpp ${NOODLE_WIN_SOURCES})
 target_link_libraries(plusplusdemo PRIVATE neuiplusplus)
 
+if(APPLE)
+  # A real CFBundleIdentifier is REQUIRED for the file dialogs, not cosmetic.
+  # NSOpenPanel / NSSavePanel run out of process via
+  # com.apple.appkit.xpc.openAndSavePanelService; with the empty identifier
+  # CMake writes by default, that XPC connection fails and runModal returns
+  # immediately having shown nothing - indistinguishable from the user
+  # cancelling. NSAlert runs in-process, so message boxes work regardless,
+  # which makes this a confusing one to diagnose.
+  set_target_properties(plusplusdemo PROPERTIES
+    MACOSX_BUNDLE_GUI_IDENTIFIER org.baconpaul.neui-noodle.plusplusdemo
+    MACOSX_BUNDLE_BUNDLE_NAME plusplusdemo)
+  set_target_properties(neui-noodle PROPERTIES
+    MACOSX_BUNDLE_GUI_IDENTIFIER org.baconpaul.neui-noodle
+    MACOSX_BUNDLE_BUNDLE_NAME neui-noodle)
+endif()
+
 foreach(t neuiplusplus plusplusdemo)
   if(MSVC)
     target_compile_options(${t} PRIVATE /W4 /utf-8)

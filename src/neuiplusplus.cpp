@@ -49,6 +49,14 @@ std::unique_ptr<Session> Session::create(neui_api_t *host)
     if (!s->widgets_)
         return nullptr;
 
+    // Both optional, and both crossplatform-host-only in practice. Feature
+    // detect rather than assume: on Windows and macOS neui_get_api(NULL)
+    // returns the native host, which exposes neither.
+    s->attrs_ = static_cast<neui_attr_api_t *>(host->get_interface(s->sess_, NEUI_API_ATTRS));
+    s->pointer_ =
+        static_cast<neui_pointer_api_t *>(host->get_interface(s->sess_, NEUI_API_POINTER));
+    s->notify_ = static_cast<neui_notify_api_t *>(host->get_interface(s->sess_, NEUI_API_NOTIFY));
+
     s->host_ = host;
     return s;
 }
@@ -101,6 +109,80 @@ void Session::setZoom(float z)
     for (auto &b : table_)
         if (b.self)
             b.self->setBounds(b.self->bounds()); // re-applies with the new scale
+}
+
+namespace
+{
+// The C API hands each path to a callback and owns the buffer only for the
+// duration of that call, so copy on the way through.
+void NEUI_ABI collectPath(void *userdata, const char *path)
+{
+    if (path)
+        static_cast<std::vector<std::string> *>(userdata)->emplace_back(path);
+}
+
+// Builds the C description. The neui_file_filter_t array points into `opts`,
+// so the returned vector must not outlive the call that uses it.
+std::vector<neui_file_filter_t> buildFilters(const FileDialogOptions &opts)
+{
+    std::vector<neui_file_filter_t> out;
+    out.reserve(opts.filters.size());
+    for (const auto &f : opts.filters)
+        out.push_back({f.label.c_str(), f.patterns.c_str()});
+    return out;
+}
+
+neui_file_dialog_t buildDesc(const FileDialogOptions &opts,
+                             const std::vector<neui_file_filter_t> &filters, bool forSave)
+{
+    neui_file_dialog_t d{};
+    d.title = opts.title.empty() ? nullptr : opts.title.c_str();
+    d.initial_dir = opts.initialDir.empty() ? nullptr : opts.initialDir.c_str();
+    d.initial_name = opts.initialName.empty() ? nullptr : opts.initialName.c_str();
+    d.filters = filters.empty() ? nullptr : filters.data();
+    d.filter_count = std::uint32_t(filters.size());
+    d.default_filter = std::uint32_t(opts.defaultFilter);
+    d.flags = 0;
+    if (!forSave && opts.multiSelect)
+        d.flags |= NEUI_FD_MULTISELECT;
+    if (opts.showHidden)
+        d.flags |= NEUI_FD_SHOW_HIDDEN;
+    if (forSave && !opts.confirmOverwrite)
+        d.flags |= NEUI_FD_NO_OVERWRITE_PROMPT;
+    return d;
+}
+} // namespace
+
+bool Session::hasFileDialog() const { return notify_ != nullptr && notify_->open_file != nullptr; }
+
+FileDialogResult Session::openFile(Component &ownerFrame, const FileDialogOptions &opts)
+{
+    FileDialogResult r;
+    if (!hasFileDialog())
+    {
+        r.supported = false;
+        return r;
+    }
+    const auto filters = buildFilters(opts);
+    const auto desc = buildDesc(opts, filters, false);
+    const int n = notify_->open_file(sess_, ownerFrame.widget(), &desc, &collectPath, &r.paths);
+    r.supported = (n >= 0); // -1 means the dialog could not be shown at all
+    return r;
+}
+
+FileDialogResult Session::saveFile(Component &ownerFrame, const FileDialogOptions &opts)
+{
+    FileDialogResult r;
+    if (notify_ == nullptr || notify_->save_file == nullptr)
+    {
+        r.supported = false;
+        return r;
+    }
+    const auto filters = buildFilters(opts);
+    const auto desc = buildDesc(opts, filters, true);
+    const int n = notify_->save_file(sess_, ownerFrame.widget(), &desc, &collectPath, &r.paths);
+    r.supported = (n >= 0);
+    return r;
 }
 
 bool NEUI_ABI Session::dispatch(void *token, neui_event_t *event)
@@ -320,6 +402,26 @@ void Component::takeFocus()
 {
     if (session_)
         session_->widgets()->set_focus(session_->raw(), widget_);
+}
+
+void Component::setCursor(Cursor c)
+{
+    cursor_ = c;
+    if (session_ && session_->attrs())
+        session_->attrs()->set_string(session_->raw(), widget_, NEUI_ATTR_CURSOR, cursorName(c));
+}
+
+bool Component::beginRelativeDrag()
+{
+    if (!session_ || !session_->pointer())
+        return false;
+    return session_->pointer()->begin_relative(session_->raw(), widget_);
+}
+
+void Component::endRelativeDrag()
+{
+    if (session_ && session_->pointer())
+        session_->pointer()->end_relative(session_->raw());
 }
 
 // ---------------------------------------------------------------------------
