@@ -239,6 +239,7 @@ bool NEUI_ABI Session::dispatch(void *token, neui_event_t *event)
         w.position = {we.x / z, we.y / z};
         w.delta = float(we.delta);
         w.isHorizontal = we.is_horizontal != 0;
+        w.isFlipped = we.is_flipped != 0;
         w.mods = modsFrom(we.buttonmap);
         b->wheel(b->obj, w);
         return true;

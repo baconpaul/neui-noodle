@@ -159,7 +159,12 @@ struct Knob : npp::Component<Knob, npp::Paints, npp::MouseEvents, npp::KeyboardE
         repaint();
     }
     void mouseDoubleClick(const npp::MouseEvent &) override { val.set(0.5f); }
-    void mouseWheel(const npp::WheelEvent &e) override { val.nudge(e.delta * 0.02f); }
+    void mouseWheel(const npp::WheelEvent &e) override
+    {
+        // A value control wants the direction the fingers moved, not the
+        // content-scrolling direction the OS handed us.
+        val.nudge(e.physicalDelta() * 0.02f);
+    }
 
     // The actions the declared slider role obliges us to perform. An AT
     // increment / decrement arrives here as an ordinary key event.
@@ -294,7 +299,12 @@ struct Slider : npp::Component<Slider, npp::Paints, npp::MouseEvents, npp::Keybo
         repaint();
     }
 
-    void mouseWheel(const npp::WheelEvent &e) override { val.nudge(e.delta * 0.02f); }
+    void mouseWheel(const npp::WheelEvent &e) override
+    {
+        // A value control wants the direction the fingers moved, not the
+        // content-scrolling direction the OS handed us.
+        val.nudge(e.physicalDelta() * 0.02f);
+    }
 
     void setFromX(float x)
     {

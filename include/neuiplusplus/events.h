@@ -90,9 +90,34 @@ struct MouseEvent
 struct WheelEvent
 {
     Point position{};
+    // As delivered. Correct for CONTENT scrolling: moving the content with your
+    // fingers is exactly what natural scrolling is for, so a scrolling consumer
+    // uses this and ignores the rest.
     float delta{0.0f}; // notches; positive = up / left
     bool isHorizontal{false};
+    // 1 when the OS already inverted the delta relative to the physical gesture
+    // (macOS "Natural scrolling", on by default). Honest about what it can
+    // promise: true means definitely inverted, false means not inverted OR this
+    // platform cannot tell - only macOS can answer.
+    bool isFlipped{false};
     Modifiers mods{};
+
+    // The direction the user's fingers actually travelled, for a VALUE control -
+    // a knob or fader has no content to move, so it wants the direction before
+    // the OS inverted it. Undoes two sign changes the client cannot otherwise
+    // see: the platform layer's Shift->horizontal flip (deliberately narrow: only
+    // a horizontal notch WITH Shift, since a genuine tilt-wheel gesture is real),
+    // then the natural-scrolling inversion. Mirrors neui's own
+    // wheel_physical_delta, which is host-internal.
+    float physicalDelta() const
+    {
+        float d = delta;
+        if (isHorizontal && mods.shift())
+            d = -d;
+        if (isFlipped)
+            d = -d;
+        return d;
+    }
 };
 
 struct KeyEvent
