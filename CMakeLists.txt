@@ -98,6 +98,19 @@ endif()
 add_executable(plusplusdemo WIN32 MACOSX_BUNDLE src/plusplusdemo.cpp ${NOODLE_WIN_SOURCES})
 target_link_libraries(plusplusdemo PRIVATE neuiplusplus)
 
+# The third program: menus. Compares neui's native NEUI_W_POPUPMENU against a
+# client-drawn npp::PopupMenu, because the native one has no per-item font and
+# no way to host a widget - so no bold header and no focusable type-in.
+add_executable(menudemo WIN32 MACOSX_BUNDLE src/menudemo.cpp ${NOODLE_WIN_SOURCES})
+target_link_libraries(menudemo PRIVATE neuiplusplus)
+
+if(MSVC)
+  target_compile_options(menudemo PRIVATE /W4 /utf-8 /w14263)
+  target_link_options(menudemo PRIVATE "/MANIFEST:NO")
+else()
+  target_compile_options(menudemo PRIVATE -Wall -Wextra -Wsuggest-override)
+endif()
+
 if(APPLE)
   # A real CFBundleIdentifier is REQUIRED for the file dialogs, not cosmetic.
   # NSOpenPanel / NSSavePanel run out of process via
@@ -112,6 +125,9 @@ if(APPLE)
   set_target_properties(neui-noodle PROPERTIES
     MACOSX_BUNDLE_GUI_IDENTIFIER org.baconpaul.neui-noodle
     MACOSX_BUNDLE_BUNDLE_NAME neui-noodle)
+  set_target_properties(menudemo PROPERTIES
+    MACOSX_BUNDLE_GUI_IDENTIFIER org.baconpaul.neui-noodle.menudemo
+    MACOSX_BUNDLE_BUNDLE_NAME menudemo)
 endif()
 
 if(MSVC)

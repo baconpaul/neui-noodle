@@ -236,6 +236,11 @@ bool NEUI_ABI Session::dispatch(void *token, neui_event_t *event)
     if (event->type == NEUI_EVENT_APP_QUIT)
         return true;
 
+    // First refusal, so a client can reach event shapes this library has no
+    // component-level equivalent for. Before everything else including paint.
+    if (s->onRawEvent && s->onRawEvent(event))
+        return true;
+
     const float z = s->zoom_;
 
     if (event->type == NEUI_EVENT_WIDGET_PAINT)

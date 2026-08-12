@@ -6,6 +6,7 @@
 #ifndef NEUIPLUSPLUS_SESSION_H
 #define NEUIPLUSPLUS_SESSION_H
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -89,6 +90,20 @@ class Session
      *         where offering your own path entry instead makes sense. */
     bool hasFileDialog() const;
     /// @}
+
+    /**
+     * @brief Raw neui events, before this library interprets any of them.
+     *
+     * The escape hatch for event shapes with no component-level equivalent -
+     * `NEUI_EVENT_ITEM_SELECTED` from `popup_tree_menu`, `WIDGET_UPDATED` from a
+     * native INPUTBOX, `TREE_ITEM_ACTIVATED` from a menu bar. Return true to
+     * consume the event; false lets normal dispatch continue.
+     *
+     * @warning Runs for EVERY event in the session, including paint. Match on
+     *          `event->type` and the payload's `.widget` first, exactly as a raw
+     *          neui client must.
+     */
+    std::function<bool(neui_event_t *)> onRawEvent;
 
   private:
     friend class ComponentCore;

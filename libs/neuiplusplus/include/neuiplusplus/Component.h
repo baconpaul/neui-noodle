@@ -162,6 +162,22 @@ class ComponentCore
     /// @}
 
   protected:
+    /**
+     * @brief Construct over a NATIVE neui widget type rather than CUSTOMDRAW.
+     *
+     * The escape hatch behind @ref NativeWidget. A component built this way owns
+     * a real `NEUI_W_INPUTBOX` / `BUTTON` / `COMBOBOX` and inherits everything
+     * neui already implements for it - IME, clipboard, undo, selection, word
+     * navigation - none of which is worth reimplementing in a CUSTOMDRAW.
+     *
+     * It must NOT name @ref interfaces::Paints: neui paints these itself, and
+     * `WIDGET_PAINT` only fires on CUSTOMDRAW, so a `paint()` here would be dead
+     * code. Naming only @ref interfaces::FocusEvents leaves `b->key` and
+     * `b->mouse` null, which is what makes the dispatcher return false and hand
+     * input back to neui's own handling for the widget - the whole point.
+     */
+    ComponentCore(Parent p, const char *widgetType);
+
     /** @brief Tag for the root constructor. @see Frame. */
     struct RootTag
     {
@@ -223,6 +239,10 @@ class Component : public ComponentCore, public Caps<Derived>...
     explicit Component(Parent p) : ComponentCore(p) {}
 
   protected:
+    /** @brief Build over a native neui widget instead of a CUSTOMDRAW.
+     *  @see ComponentCore::ComponentCore(Parent, const char *) and NativeWidget. */
+    Component(Parent p, const char *widgetType) : ComponentCore(p, widgetType) {}
+
     Component(Session &s, neui_widget_t w, Rect b, ComponentCore::RootTag t)
         : ComponentCore(s, w, b, t)
     {

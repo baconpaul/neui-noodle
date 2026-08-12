@@ -23,6 +23,13 @@ ComponentCore::ComponentCore(Parent p) : session_(&p.of.session()), parent_(&p.o
                                           1, 1, nullptr);
 }
 
+ComponentCore::ComponentCore(Parent p, const char *widgetType)
+    : session_(&p.of.session()), parent_(&p.of)
+{
+    widget_ = session_->widgets()->create(session_->raw(), p.of.widget(), widgetType, 0, 0, 1, 1,
+                                          nullptr);
+}
+
 ComponentCore::ComponentCore(Session &s, neui_widget_t w, Rect bounds, RootTag)
     : session_(&s), widget_(w), bounds_(bounds)
 {
