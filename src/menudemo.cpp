@@ -158,17 +158,20 @@ struct Panel : npp::Component<Panel, npp::Paints, npp::Resizes>
     }
 
     FilterState &state;
-    Button &nativeBtn = add<Button>("Native menu");
-    Button &customBtn = add<Button>("Custom menu");
+    Button &nativeBtn = add<Button>("Native");
+    Button &customBtn = add<Button>("Custom (in frame)");
+    Button &desktopBtn = add<Button>("Custom (desktop)");
     Readout &readout = add<Readout>();
 
     void resized() override
     {
         auto b = localBounds().reduced(14.0f);
         auto top = b.removeFromTop(30.0f);
-        nativeBtn.setBounds(top.removeFromLeft(140.0f));
-        top.removeFromLeft(10.0f);
-        customBtn.setBounds(top.removeFromLeft(140.0f));
+        nativeBtn.setBounds(top.removeFromLeft(110.0f));
+        top.removeFromLeft(8.0f);
+        customBtn.setBounds(top.removeFromLeft(150.0f));
+        top.removeFromLeft(8.0f);
+        desktopBtn.setBounds(top.removeFromLeft(150.0f));
         b.removeFromTop(14.0f);
         readout.setBounds(b.removeFromTop(96.0f));
     }
@@ -342,7 +345,7 @@ int main(int argc, char *argv[])
 
     FilterState state;
 
-    npp::Frame frame{*session, NEUI_W_APPWINDOW, npp::Rect{160, 160, 560, 260},
+    npp::Frame frame{*session, NEUI_W_APPWINDOW, npp::Rect{160, 160, 620, 260},
                      "neui menu demo"};
 
     auto &panel = frame.add<Panel>(state);
@@ -355,10 +358,20 @@ int main(int argc, char *argv[])
     // Hung off the FRAME, not the button: submenus paint outside the parent
     // panel's bounds, and neui clips a child to its parent.
     npp::MenuStyle style;
-    npp::PopupMenu menu{frame, style};
+    npp::PopupMenu menu{frame, style, npp::MenuPlacement::inFrame};
 
     panel.customBtn.onClick = [&] {
         menu.show(buildCustomMenu(state, panel), panel.anchorUnder(panel.customBtn));
+    };
+
+    // The same menu, but each level in its own borderless top-level window, so
+    // it can extend past the editor the way juce::PopupMenu does. Open it near
+    // the window's bottom edge to see the difference: the in-frame one slides up
+    // to stay inside, this one hangs over the desktop.
+    npp::PopupMenu desktopMenu{frame, style, npp::MenuPlacement::desktop};
+
+    panel.desktopBtn.onClick = [&] {
+        desktopMenu.show(buildCustomMenu(state, panel), panel.anchorUnder(panel.desktopBtn));
     };
 
     // --- the native menu ----------------------------------------------------

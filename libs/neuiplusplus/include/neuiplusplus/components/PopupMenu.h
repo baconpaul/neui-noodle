@@ -7,7 +7,9 @@
 #define NEUIPLUSPLUS_COMPONENTS_POPUPMENU_H
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -400,6 +402,11 @@ class MenuPanel : public Component<MenuPanel, interfaces::Paints, interfaces::Mo
     void updateHover(Point p)
     {
         const int r = rowAt(p);
+        // Every mouse move lands here; only a CHANGE of row is news. Reporting
+        // unconditionally makes the controller rebuild an already-open submenu
+        // on every motion event.
+        if (r == hover_)
+            return;
         setHoverRow(r);
         if (onHoverRow)
             onHoverRow(r);
@@ -520,13 +527,43 @@ class MenuPanel : public Component<MenuPanel, interfaces::Paints, interfaces::Mo
 };
 
 /**
+ * @brief Where a menu's panels are allowed to live.
+ *
+ * THE WHOLE REASON THIS IS A CHOICE. On neui's crossplatform host every menu
+ * surface is painted into the frame: `Session::open_popup_menu` converts its
+ * anchor to frame-local absolute coordinates and paints through
+ * `paint_popup_menu`, and `show_tree_popup` paints through `paint_tree_popup`,
+ * both from inside `paint_frame`. So neither of neui's own menus can leave the
+ * window, and neither can @ref inFrame below.
+ *
+ * That is a real regression against JUCE, whose `PopupMenu` puts itself on the
+ * desktop as a top-level window - which is how Surge's FX menu manages to be a
+ * three-column grid larger than the entire editor. (neui's NATIVE macOS host
+ * does escape, via a real `NSMenu` in `run_popup_menu_macos`, but the native
+ * hosts leave `popup_tree_menu` null and implement none of EMBED / A11Y / TIMER
+ * / POINTER, so a plugin cannot use them.)
+ *
+ * @ref desktop is the client-side workaround: one borderless `NEUI_W_PLUGWINDOW`
+ * per menu level, positioned in screen coordinates. It should be retired the
+ * moment the host can host a popup surface itself.
+ */
+enum class MenuPlacement
+{
+    /** Panels are children of the host frame. Cannot leave it; clamped to fit. */
+    inFrame,
+    /** Each level gets its own borderless top-level window. Escapes the frame. */
+    desktop
+};
+
+/**
  * @brief The controller: owns the item tree, the scrim and the panel stack.
  *
  * Not a component itself. It hangs its panels off a host component - pass the
- * FRAME, so a submenu can paint anywhere in the window.
+ * FRAME, so an @ref MenuPlacement::inFrame submenu can paint anywhere in the
+ * window.
  *
  * @code
- * npp::PopupMenu menu{frame, style};
+ * npp::PopupMenu menu{frame, style, npp::MenuPlacement::desktop};
  * menu.show({ npp::MenuItem::makeHeader("Filter Type"),
  *             npp::MenuItem::makeToggle("Lowpass", true, []{ ... }),
  *             npp::MenuItem::makeSubmenu("More", { ... }) },
@@ -537,16 +574,20 @@ class PopupMenu
 {
   public:
     /** @param host the frame. @param style must outlive this. */
-    explicit PopupMenu(ComponentCore &host, const MenuStyle &style) : host_(&host), style_(&style)
+    PopupMenu(ComponentCore &host, const MenuStyle &style,
+              MenuPlacement placement = MenuPlacement::inFrame)
+        : host_(&host), style_(&style), placement_(placement)
     {
-        // Scrim first so it paints UNDER every panel: neui paints children in
-        // creation order. It catches the click-outside that dismisses.
+        // Scrim first so it paints UNDER every in-frame panel: neui paints
+        // children in creation order. It catches the click-outside that
+        // dismisses - and in desktop mode it is the ONLY such catcher, since a
+        // click on another application never reaches us at all.
         scrim_ = &host.add<Scrim>();
         scrim_->style = style_;
         scrim_->onClick = [this]() { dismiss(); };
     }
 
-    /** @brief Open at @p at, in HOST-local design units. */
+    /** @brief Open at @p at, in HOST-local design units, whatever the placement. */
     void show(std::vector<MenuItem> items, Point at)
     {
         items_ = std::move(items);
@@ -555,11 +596,11 @@ class PopupMenu
         scrim_->setBounds(host_->localBounds());
         scrim_->setVisible(true);
 
-        auto &p = panel(0);
-        p.setItems(&items_);
-        placePanel(p, at);
-        p.setVisible(true);
-        p.focusInitial();
+        auto &lv = level(0);
+        lv.panel->setItems(&items_);
+        placeLevel(lv, at);
+        showLevel(lv);
+        lv.panel->focusInitial();
         open_ = true;
     }
 
@@ -567,9 +608,9 @@ class PopupMenu
     {
         if (!open_)
             return;
-        for (int i = 0; i <= depth_; ++i)
-            panel(i).commitTypeIn();
-        hidePanelsFrom(0);
+        for (int i = 0; i <= depth_ && i < int(levels_.size()); ++i)
+            levels_[std::size_t(i)]->panel->commitTypeIn();
+        hideLevelsFrom(0);
         scrim_->setVisible(false);
         open_ = false;
         if (onDismiss)
@@ -577,6 +618,7 @@ class PopupMenu
     }
 
     bool isOpen() const { return open_; }
+    MenuPlacement placement() const { return placement_; }
 
     /** @brief Fired after any dismissal, including a pick. */
     std::function<void()> onDismiss;
@@ -604,73 +646,175 @@ class PopupMenu
         }
     };
 
-    MenuPanel &panel(int level)
+    /**
+     * @brief One open level of the cascade.
+     *
+     * @ref rect is HOST-LOCAL in both placements, and is the source of truth for
+     * where the level sits. It cannot be recovered from `panel->bounds()`,
+     * because in desktop mode the panel fills its own window and its bounds are
+     * therefore (0, 0, w, h) - so submenu positioning would collapse onto the
+     * origin if it read the panel.
+     */
+    struct Level
     {
-        while (int(panels_.size()) <= level)
+        MenuPanel *panel{nullptr};
+        std::unique_ptr<Frame> window; ///< desktop placement only
+        Rect rect;                     ///< host-local, design units
+        /** @brief Which of THIS level's rows has its submenu open, or -1. The
+         *         guard that stops an open submenu being rebuilt. */
+        int openChildRow{-1};
+    };
+
+    /**
+     * @note Held by pointer so elements have STABLE ADDRESSES. `level(n)`
+     *       appends, and callers legitimately hold a `Level &` for level n
+     *       across the call that creates level n + 1; by value that reference
+     *       would dangle on reallocation.
+     */
+    Level &level(int index)
+    {
+        while (int(levels_.size()) <= index)
         {
-            auto &p = host_->add<MenuPanel>();
-            p.setStyle(style_);
-            const int mine = int(panels_.size());
-            p.onHoverRow = [this, mine](int row) { hoverChanged(mine, row); };
-            p.onActivate = [this, mine](int row) { activate(mine, row); };
-            p.onDismissRequested = [this]() { dismiss(); };
-            panels_.push_back(&p);
+            const int mine = int(levels_.size());
+            auto lv = std::make_unique<Level>();
+
+            if (placement_ == MenuPlacement::desktop)
+            {
+                // Borderless top-level. Created off-screen at a nominal size;
+                // every show repositions and resizes it. PLUGWINDOW is outside
+                // the quit count, so an idle one keeps nothing alive.
+                lv->window = std::make_unique<Frame>(
+                    host_->session(), NEUI_W_PLUGWINDOW,
+                    Rect{-10000.0f, -10000.0f, style_->width, 32.0f}, "menu");
+                lv->panel = &lv->window->add<MenuPanel>();
+            }
+            else
+            {
+                lv->panel = &host_->add<MenuPanel>();
+            }
+
+            lv->panel->setStyle(style_);
+            lv->panel->onHoverRow = [this, mine](int row) { hoverChanged(mine, row); };
+            lv->panel->onActivate = [this, mine](int row) { activate(mine, row); };
+            lv->panel->onDismissRequested = [this]() { dismiss(); };
+            levels_.push_back(std::move(lv));
         }
-        return *panels_[std::size_t(level)];
+        return *levels_[std::size_t(index)];
     }
 
-    /** @brief Position a panel at @p at, nudged to stay inside the host. */
-    void placePanel(MenuPanel &p, Point at)
+    /**
+     * @brief Host-local point -> screen logical pixels.
+     *
+     * @note The frame's `get_pos` is the OUTER window origin, so on a titled
+     *       APPWINDOW this lands the menu low by the title-bar height. Harmless
+     *       for the borderless PLUGWINDOW a plugin editor actually is, which is
+     *       why it is not corrected for here.
+     */
+    Point toScreen(Point hostLocal) const
     {
-        const Rect host = host_->localBounds();
+        int fx = 0, fy = 0;
+        auto &s = host_->session();
+        s.widgets()->get_pos(s.raw(), host_->widget(), &fx, &fy);
+        const float z = s.zoom();
+        return {float(fx) + hostLocal.x * z, float(fy) + hostLocal.y * z};
+    }
+
+    /** @brief Decide @p lv's host-local rect, and move whatever carries it. */
+    void placeLevel(Level &lv, Point at)
+    {
         const float w = style_->width;
-        const float h = p.preferredHeight();
+        const float h = lv.panel->preferredHeight();
         float x = at.x, y = at.y;
-        if (x + w > host.getRight())
-            x = std::max(host.getX(), host.getRight() - w);
-        if (y + h > host.getBottom())
-            y = std::max(host.getY(), host.getBottom() - h);
-        p.setBounds({x, y, w, h});
+
+        if (placement_ == MenuPlacement::inFrame)
+        {
+            // Clamped, because it physically cannot overflow: neui clips a child
+            // to its parent, so an unclamped panel would be cut off rather than
+            // hang outside. Desktop placement needs none of this.
+            const Rect host = host_->localBounds();
+            if (x + w > host.getRight())
+                x = std::max(host.getX(), host.getRight() - w);
+            if (y + h > host.getBottom())
+                y = std::max(host.getY(), host.getBottom() - h);
+        }
+
+        lv.rect = {x, y, w, h};
+
+        if (placement_ == MenuPlacement::desktop)
+        {
+            // set_pos direct rather than Frame::setBounds: a frame's position is
+            // SCREEN logical pixels and must not be multiplied by the zoom, but
+            // its client size must be.
+            auto &s = host_->session();
+            const float z = s.zoom();
+            const Point o = toScreen({x, y});
+            s.widgets()->set_pos(s.raw(), lv.window->widget(), int(std::lround(o.x)),
+                                 int(std::lround(o.y)), int(std::lround(w * z)),
+                                 int(std::lround(h * z)));
+            lv.panel->setBounds(Rect::fromSize(w, h));
+        }
+        else
+        {
+            lv.panel->setBounds(lv.rect);
+        }
     }
 
-    void hoverChanged(int level, int row)
+    void showLevel(Level &lv)
     {
-        if (level != depth_)
+        if (lv.window)
+            lv.window->show();
+        lv.panel->setVisible(true);
+    }
+
+    void hoverChanged(int levelIndex, int row)
+    {
+        if (levelIndex != depth_)
         {
             // Hovering back up into an ancestor closes everything below it.
-            hidePanelsFrom(level + 1);
-            depth_ = level;
+            hideLevelsFrom(levelIndex + 1);
+            depth_ = levelIndex;
         }
         if (row < 0)
             return;
 
-        auto &p = panel(level);
-        const auto *items = p.items();
+        auto &lv = level(levelIndex);
+        const auto *items = lv.panel->items();
         if (!items || row >= int(items->size()))
             return;
         const auto &it = (*items)[std::size_t(row)];
 
         if (it.kind == MenuItem::Kind::submenu && it.enabled)
         {
-            const Rect r = p.rowRect(row);
-            const Rect pb = p.bounds();
-            auto &child = panel(level + 1);
-            child.setItems(&it.children);
-            placePanel(child, {pb.getRight() - 3.0f, pb.getY() + r.getY() - style_->padding});
-            child.setVisible(true);
-            depth_ = level + 1;
+            // ALREADY OPEN FOR THIS ROW - do nothing. Reopening re-runs
+            // setItems, set_pos and show on a live OS window, which in desktop
+            // placement flickers hard. Cheap and invisible in-frame, which is
+            // why it survived until the windows arrived.
+            if (lv.openChildRow == row)
+                return;
+
+            hideLevelsFrom(levelIndex + 1);
+
+            const Rect r = lv.panel->rowRect(row);
+            const Rect pb = lv.rect; // host-local in both placements
+            auto &child = level(levelIndex + 1);
+            child.panel->setItems(&it.children);
+            placeLevel(child, {pb.getRight() - 3.0f, pb.getY() + r.getY() - style_->padding});
+            showLevel(child);
+            lv.openChildRow = row;
+            depth_ = levelIndex + 1;
         }
         else
         {
-            hidePanelsFrom(level + 1);
-            depth_ = level;
+            hideLevelsFrom(levelIndex + 1);
+            lv.openChildRow = -1;
+            depth_ = levelIndex;
         }
     }
 
-    void activate(int level, int row)
+    void activate(int levelIndex, int row)
     {
-        auto &p = panel(level);
-        const auto *items = p.items();
+        auto &lv = level(levelIndex);
+        const auto *items = lv.panel->items();
         if (!items || row >= int(items->size()))
             return;
         const auto &it = (*items)[std::size_t(row)];
@@ -682,16 +826,33 @@ class PopupMenu
             action();
     }
 
-    void hidePanelsFrom(int level)
+    /**
+     * @brief Hide every level from @p levelIndex down, and keep the open-child
+     *        bookkeeping true.
+     *
+     * A hidden level has no open child, and the level ABOVE no longer has one
+     * either - miss that second part and the guard in @ref hoverChanged goes
+     * stale, so a submenu closed by hovering away never reopens.
+     */
+    void hideLevelsFrom(int levelIndex)
     {
-        for (int i = level; i < int(panels_.size()); ++i)
-            panels_[std::size_t(i)]->setVisible(false);
+        for (int i = levelIndex; i < int(levels_.size()); ++i)
+        {
+            auto &lv = *levels_[std::size_t(i)];
+            lv.panel->setVisible(false);
+            if (lv.window)
+                lv.window->setVisible(false);
+            lv.openChildRow = -1;
+        }
+        if (levelIndex > 0 && levelIndex - 1 < int(levels_.size()))
+            levels_[std::size_t(levelIndex - 1)]->openChildRow = -1;
     }
 
     ComponentCore *host_{nullptr};
     const MenuStyle *style_{nullptr};
+    MenuPlacement placement_{MenuPlacement::inFrame};
     Scrim *scrim_{nullptr};
-    std::vector<MenuPanel *> panels_;
+    std::vector<std::unique_ptr<Level>> levels_;
     std::vector<MenuItem> items_;
     int depth_{0};
     bool open_{false};
