@@ -4,3 +4,6 @@
 [submodule "libs/sst-jucegui"]
 	path = libs/sst-jucegui
 	url = https://github.com/surge-synthesizer/sst-jucegui
+[submodule "libs/neuiplusplus"]
+	path = libs/neuiplusplus
+	url = https://github.com/baconpaul/neuiplusplus
