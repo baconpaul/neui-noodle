@@ -12,13 +12,16 @@
  *                  Bold header: NO - the tree model carries text, not style.
  *                  Type-in: NO - rows are model entries, not widgets.
  *
- *   [Custom menu]  npp::PopupMenu, client-drawn CUSTOMDRAW panels.
- *                  All five, including a real NEUI_W_INPUTBOX in a row, which
- *                  brings IME / clipboard / undo / selection with it because it
- *                  is neui's own widget rather than a hand-rolled text field.
+ *   [Custom menu]  npp::PopupMenu - client-drawn rows in a NEUI_W_POPUPSURFACE
+ *                  per cascade level, so the menu MAY LEAVE THE EDITOR WINDOW.
+ *                  Bold header: yes. Type-in: a real NEUI_W_INPUTBOX in a row.
+ *                  Caveat, upstream: a popup surface does not take activation,
+ *                  so keys go to the owner's window - arrow keys and typing into
+ *                  that field do not work yet (plans/popup-surface.md, wave 2).
+ *                  Escape and outside-press still dismiss; the host does those.
  *
- * The readout under the buttons reports what came back, so a pick, a toggle and
- * a committed type-in are all visible without a debugger.
+ * The readout under the buttons reports what came back, so a pick and a toggle
+ * are visible without a debugger.
  */
 
 #include <neuiplusplus/components/NativeWidget.h>
@@ -69,9 +72,9 @@ const char *const k_types[] = {"Lowpass 12", "Lowpass 24", "Bandpass", "Highpass
 constexpr int k_typeCount = 4;
 
 // ---------------------------------------------------------------------------
-// A push button. Reports its own bottom-left in FRAME coordinates so a menu can
-// be anchored under it - the menu's panels are children of the frame, not of
-// the button, so the button's own local space is the wrong space to answer in.
+// A push button. The menu anchors directly to it - NEUI_API_POPUP takes an
+// anchor widget plus a side, and the host does the screen-coordinate conversion,
+// the edge flipping and the clamping.
 
 struct Button : npp::Component<Button, npp::Paints, npp::MouseEvents, npp::FocusEvents>
 {
@@ -159,8 +162,7 @@ struct Panel : npp::Component<Panel, npp::Paints, npp::Resizes>
 
     FilterState &state;
     Button &nativeBtn = add<Button>("Native");
-    Button &customBtn = add<Button>("Custom (in frame)");
-    Button &desktopBtn = add<Button>("Custom (desktop)");
+    Button &customBtn = add<Button>("Custom menu");
     Readout &readout = add<Readout>();
 
     void resized() override
@@ -170,19 +172,11 @@ struct Panel : npp::Component<Panel, npp::Paints, npp::Resizes>
         nativeBtn.setBounds(top.removeFromLeft(110.0f));
         top.removeFromLeft(8.0f);
         customBtn.setBounds(top.removeFromLeft(150.0f));
-        top.removeFromLeft(8.0f);
-        desktopBtn.setBounds(top.removeFromLeft(150.0f));
         b.removeFromTop(14.0f);
         readout.setBounds(b.removeFromTop(96.0f));
     }
 
     void paint(npp::Canvas &g) override { g.fillRect(g.bounds(), pal.window); }
-
-    /** @brief Bottom-left of a child button, in FRAME coordinates. */
-    npp::Point anchorUnder(const Button &b) const
-    {
-        return {bounds().getX() + b.bounds().getX(), bounds().getY() + b.bounds().getBottom() + 2.0f};
-    }
 
     void refresh()
     {
@@ -355,23 +349,15 @@ int main(int argc, char *argv[])
     panel.refresh();
 
     // --- the custom menu ----------------------------------------------------
-    // Hung off the FRAME, not the button: submenus paint outside the parent
-    // panel's bounds, and neui clips a child to its parent.
     npp::MenuStyle style;
-    npp::PopupMenu menu{frame, style, npp::MenuPlacement::inFrame};
+    npp::PopupMenu menu{frame, style};
 
+    // Anchored to the BUTTON now, not to a computed point: the host converts,
+    // clamps and flips, and the menu may extend past the editor window.
     panel.customBtn.onClick = [&] {
-        menu.show(buildCustomMenu(state, panel), panel.anchorUnder(panel.customBtn));
-    };
-
-    // The same menu, but each level in its own borderless top-level window, so
-    // it can extend past the editor the way juce::PopupMenu does. Open it near
-    // the window's bottom edge to see the difference: the in-frame one slides up
-    // to stay inside, this one hangs over the desktop.
-    npp::PopupMenu desktopMenu{frame, style, npp::MenuPlacement::desktop};
-
-    panel.desktopBtn.onClick = [&] {
-        desktopMenu.show(buildCustomMenu(state, panel), panel.anchorUnder(panel.desktopBtn));
+        if (!menu.show(buildCustomMenu(state, panel), panel.customBtn))
+            panel.readout.set({"no NEUI_API_POPUP on this host",
+                               "run without --native (crossplatform only)"});
     };
 
     // --- the native menu ----------------------------------------------------
